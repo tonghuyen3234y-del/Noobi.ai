@@ -906,6 +906,12 @@ function validateSettings(value: unknown): AppSettings {
     ? DEFAULT_NOOBI_CREW
     : value.defaultNoobiCrew;
   if (value.theme !== 'dark' && value.theme !== 'light') throw new Error('Theme setting is invalid');
+  // Existing installs predate agent provider selection: default to Codex so an
+  // upgrade never silently switches the engine that writes user workspaces.
+  const agentProvider = value.agentProvider === undefined ? 'codex' : value.agentProvider;
+  if (agentProvider !== 'codex' && agentProvider !== 'deepseek') {
+    throw new Error('Agent provider setting is invalid');
+  }
   return {
     defaultWorkspace: resolve(value.defaultWorkspace),
     defaultModel: value.defaultModel === null ? null : value.defaultModel.trim(),
@@ -916,7 +922,29 @@ function validateSettings(value: unknown): AppSettings {
     defaultNoobiPackId,
     defaultNoobiCrew: validatedNoobiCrew(defaultNoobiCrew, 'Default Noobi crew setting'),
     theme: value.theme,
+    agentProvider,
+    providerModels: validatedProviderModels(value.providerModels),
   };
+}
+
+function validatedProviderModels(
+  value: unknown,
+): Partial<Record<'codex' | 'deepseek', string>> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Provider model setting is invalid');
+  }
+  const record = value as Record<string, unknown>;
+  const result: Partial<Record<'codex' | 'deepseek', string>> = {};
+  for (const provider of ['codex', 'deepseek'] as const) {
+    const model = record[provider];
+    if (model === undefined) continue;
+    if (typeof model !== 'string' || model.length === 0 || model.length > 200) {
+      throw new Error('Provider model setting is invalid');
+    }
+    result[provider] = model;
+  }
+  return result;
 }
 
 function defaultSettings(defaultWorkspace: string): AppSettings {
@@ -930,6 +958,8 @@ function defaultSettings(defaultWorkspace: string): AppSettings {
     defaultNoobiPackId: DEFAULT_NOOBI_PACK_ID,
     defaultNoobiCrew: DEFAULT_NOOBI_CREW.map((member) => ({ ...member })),
     theme: 'light',
+    agentProvider: 'codex',
+    providerModels: {},
   };
 }
 

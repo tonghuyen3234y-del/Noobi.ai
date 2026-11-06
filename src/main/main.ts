@@ -15,6 +15,7 @@ import {
 } from 'electron';
 import type {
   AgentEvent,
+  AgentProviderId,
   AppSettings,
   ApprovalAnswers,
   ApprovalDecision,
@@ -56,6 +57,9 @@ import { AssetStore } from './assetStore.js';
 import { AssetPlanStore } from './assetPlanStore.js';
 import { ApprovalBroker } from './approvalBroker.js';
 import { CodexAppServer } from './codexAppServer.js';
+import { createRuntimeHolder } from './agentProvider.js';
+import { AgentProviderManager } from './agentProviderManager.js';
+import { ProviderCredentialStore, type SecretCipher } from './providerCredentialStore.js';
 import { EventLog } from './eventLog.js';
 import { notificationToEvent, routeThreadId, type ThreadRoute } from './eventMapper.js';
 import {
@@ -128,8 +132,18 @@ app.setName('Noobi.ai');
 const runtime = new CodexAppServer({
   codexHome: join(app.getPath('userData'), 'codex-home'),
 });
-const engineAdvisor = new GameEngineAdvisor(runtime);
-const harness = new GameHarness(runtime);
+
+/**
+ * Stable handle through which every collaborator reaches the *active* runtime.
+ *
+ * `runtime` above stays the Codex instance; `agentRuntime` forwards to whichever
+ * provider the user selected, so `GameHarness`, the approval broker and the MCP
+ * manager can be constructed once and still follow a provider switch.
+ */
+const runtimeHolder = createRuntimeHolder(runtime);
+const agentRuntime = runtimeHolder.switching();
+const engineAdvisor = new GameEngineAdvisor(agentRuntime);
+const harness = new GameHarness(agentRuntime);
 const previews = new PreviewServer();
 const playtestPreviews = new PreviewServer();
 const gameplayExperienceEvaluator = new GameplayExperienceEvaluator({
@@ -157,6 +171,8 @@ let mediaGenerationService: MediaGenerationService;
 let mcpConfigManager: McpConfigManager;
 let promptTemplateStore: PromptTemplateStore;
 let imageGenerationAttestations: ImageGenerationAttestationStore;
+let providerCredentialStore: ProviderCredentialStore;
+let agentProviderManager: AgentProviderManager;
 let mainWindow: BrowserWindow | null = null;
 let shuttingDown = false;
 const mediaProviderTests = new Map<MediaCapability, MediaProviderTestResult>();
@@ -214,7 +230,7 @@ async function launch(): Promise<void> {
   imageGenerationAttestations = new ImageGenerationAttestationStore(
     join(userData, 'image-generation-attestations.json'),
   );
-  mediaProviderStore = new MediaProviderStore(join(userData, 'media-providers.json'), {
+  const secretCipher: SecretCipher = {
     isAvailable: () => safeStorage.isEncryptionAvailable(),
     seal: (plaintext) => `electron-safe-storage:v1:${safeStorage.encryptString(plaintext).toString('base64')}`,
     open: (sealed) => {
@@ -230,12 +246,27 @@ async function launch(): Promise<void> {
       }
       return safeStorage.decryptString(encrypted);
     },
-  });
+  };
+  mediaProviderStore = new MediaProviderStore(join(userData, 'media-providers.json'), secretCipher);
+  providerCredentialStore = new ProviderCredentialStore(
+    join(userData, 'agent-provider-credentials.json'),
+    secretCipher,
+  );
   mediaGenerationService = new MediaGenerationService({
     providerStore: mediaProviderStore,
     assetStore,
   });
   promptTemplateStore = new PromptTemplateStore(join(userData, 'prompt-templates.json'));
+  agentProviderManager = new AgentProviderManager({
+    userDataDir: userData,
+    credentials: providerCredentialStore,
+    codex: runtime,
+    imageApiConfigured: async () => activeMediaProvider('image') !== null,
+    buildHostTools: () => MEDIA_DYNAMIC_TOOLS,
+    executeHostTool: (name, args, context) =>
+      mediaToolBroker.executeInline(name, args, context),
+    readonlyPaths: ['AGENTS.md', '.noobi', '.codex', 'GAME_DESIGN.md'],
+  });
   mcpConfigManager = new McpConfigManager(runtime);
   approvalBroker = new ApprovalBroker(runtime, (threadId) => threadRoutes.get(threadId)?.projectId ?? null);
   mediaToolBroker = new MediaToolBroker({
@@ -440,18 +471,52 @@ function bindIpc(): void {
     const events = Object.fromEntries(
       await Promise.all(projects.map(async (project) => [project.id, await eventLog.read(project.id)] as const)),
     );
-    return { projects, settings, runtime: runtimeStatusForUi(runtime.status), events };
+    await applyConfiguredProvider(settings.agentProvider);
+    const activeRuntime = runtimeHolder.current;
+    return {
+      projects,
+      settings,
+      runtime: runtimeStatusForUi(activeRuntime.status),
+      events,
+      agentProviders: await agentProviderManager.allReadiness(),
+      providerCredentials: await providerCredentialStore.status(['codex', 'deepseek']),
+    };
   });
 
-  handle('noobi:runtime:refresh', async () => runtimeStatusForUi(await runtime.refresh()));
+  handle('noobi:runtime:refresh', async () => {
+    const active = runtimeHolder.current;
+    return runtimeStatusForUi(await active.refresh());
+  });
   handle('noobi:runtime:login', async () => {
-    const result = await runtime.startLogin();
+    const result = await runtimeHolder.current.startLogin();
     if (result.authUrl && /^https:\/\//iu.test(result.authUrl)) {
       await shell.openExternal(result.authUrl);
     }
     return result;
   });
-  handle('noobi:runtime:logout', async () => runtimeStatusForUi(await runtime.logout()));
+  handle('noobi:runtime:logout', async () => runtimeStatusForUi(await runtimeHolder.current.logout()));
+
+  handle('noobi:agent:providers', async () => agentProviderManager.allReadiness());
+  handle('noobi:agent:credentials', async () => providerCredentialStore.status(['codex', 'deepseek']));
+  handle('noobi:agent:set-key', async (_event, provider: unknown, apiKey: unknown) => {
+    if (provider !== 'deepseek') throw new Error('只有 DeepSeek 需要 API Key');
+    if (typeof apiKey !== 'string') throw new Error('API Key 格式无效');
+    await providerCredentialStore.set(provider, apiKey);
+    // A new key invalidates any cached runtime built with the old one.
+    agentProviderManager.invalidate();
+    return providerCredentialStore.status(['codex', 'deepseek']);
+  });
+  handle('noobi:agent:select', async (_event, provider: unknown) => {
+    const settings = await projectStore.getSettings();
+    const patch = validateSettingsPatch({ agentProvider: provider as AppSettings['agentProvider'] });
+    const saved = await projectStore.saveSettings(patch);
+    await applyConfiguredProvider(saved.agentProvider);
+    return {
+      settings: saved,
+      runtime: runtimeStatusForUi(runtimeHolder.current.status),
+      agentProviders: await agentProviderManager.allReadiness(),
+    };
+  });
   handle('noobi:dialog:directory', async () => {
     const settings = await projectStore.getSettings();
     const options: Electron.OpenDialogOptions = {
@@ -1328,6 +1393,35 @@ async function listMcpSettings(): Promise<McpServerSetting[]> {
 
 async function listPromptSettings(): Promise<PromptTemplateSetting[]> {
   return promptTemplateStore.list();
+}
+
+/**
+ * Point `runtimeHolder` at the runtime for the configured provider.
+ *
+ * Falls back to Codex when the requested provider is not usable, so a broken
+ * key or a missing image API can never leave the app with no working engine.
+ * The fallback is reported rather than hidden.
+ */
+async function applyConfiguredProvider(provider: AgentProviderId): Promise<void> {
+  try {
+    const active = await agentProviderManager.activate(provider);
+    runtimeHolder.replace(active);
+  } catch (error) {
+    if (provider !== 'codex') {
+      emitAgentEvent({
+        id: randomUUID(),
+        projectId: '',
+        kind: 'error',
+        title: '运行时回退',
+        message: `无法启用 ${provider}，已回退到 Codex App Server：${asError(error).message}`,
+        stage: 'brief',
+        timestamp: new Date().toISOString(),
+        method: 'provider/fallback',
+      });
+    }
+    runtimeHolder.replace(runtime);
+    throw error;
+  }
 }
 
 function runtimeStatusForUi(status: RuntimeStatus): RuntimeStatus {
@@ -3056,7 +3150,12 @@ async function shutdown(): Promise<void> {
   const projects = projectStore ? await projectStore.list().catch(() => []) : [];
   const stopRuns = Promise.allSettled(projects.map((project) => harness.stop(project.id)));
   await Promise.race([stopRuns, delay(5_000)]);
-  await Promise.allSettled([previews.stopAll(), playtestPreviews.stopAll(), runtime.stop()]);
+  await Promise.allSettled([
+    previews.stopAll(),
+    playtestPreviews.stopAll(),
+    agentProviderManager.dispose(),
+    runtime.stop(),
+  ]);
   await Promise.race([Promise.allSettled([...backgroundRuns]), delay(2_000)]);
   await projectStore?.list().catch(() => undefined);
   await eventLog?.flush().catch(() => undefined);

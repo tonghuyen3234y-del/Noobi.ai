@@ -2,9 +2,9 @@ import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
 
 import type { RuntimeStatus } from '../shared/contracts.js';
-import type { CodexAppServer, CodexSkillSummary } from './codexAppServer.js';
+import type { AgentRuntime, AgentSkillSummary } from './agentRuntime.js';
 
-type SkillRuntime = Pick<CodexAppServer, 'listSkills'>;
+type SkillRuntime = Pick<AgentRuntime, 'listSkills'>;
 
 export interface RequiredImageGenerationSkill {
   name: 'imagegen';
@@ -33,7 +33,7 @@ export async function resolveRequiredImageGenerationSkill(
 
 export async function assertRequiredImageGenerationSkillToggleAllowed(
   codexHome: string | null,
-  skill: Pick<CodexSkillSummary, 'name' | 'path'>,
+  skill: Pick<AgentSkillSummary, 'name' | 'path'>,
   enabled: boolean,
 ): Promise<void> {
   if (enabled || !codexHome || skill.name !== 'imagegen') return;

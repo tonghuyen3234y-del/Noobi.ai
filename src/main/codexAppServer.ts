@@ -14,40 +14,32 @@ import type {
   RuntimeCapabilities,
   RuntimeStatus,
 } from '../shared/contracts.js';
-export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+import type {
+  AgentMcpServerStatus,
+  AgentRuntime,
+  AgentSkillSummary,
+  DynamicToolFunctionSpec,
+  DynamicToolNamespaceSpec,
+  DynamicToolSpec,
+  JsonValue,
+  StartThreadOptions,
+  StartTurnOptions,
+  TurnResult,
+} from './agentRuntime.js';
 
-export interface DynamicToolFunctionSpec {
-  type: 'function';
-  name: string;
-  description: string;
-  inputSchema: JsonValue;
-  deferLoading?: boolean;
-}
+// Re-exported for existing consumers; the canonical definitions live in agentRuntime.ts.
+export type {
+  DynamicToolFunctionSpec,
+  DynamicToolNamespaceSpec,
+  DynamicToolSpec,
+  JsonValue,
+  StartThreadOptions,
+  StartTurnOptions,
+  TurnResult,
+};
 
-export interface DynamicToolNamespaceSpec {
-  type: 'namespace';
-  name: string;
-  description: string;
-  tools: DynamicToolFunctionSpec[];
-}
-
-export type DynamicToolSpec = DynamicToolFunctionSpec | DynamicToolNamespaceSpec;
-
-export interface CodexSkillSummary {
-  name: string;
-  description: string;
-  path: string;
-  scope: 'user' | 'repo' | 'system' | 'admin' | string;
-  enabled: boolean;
-  cwd: string;
-}
-
-export interface CodexMcpServerStatus {
-  name: string;
-  authStatus: string;
-  connected: boolean;
-  toolCount: number;
-}
+export type CodexSkillSummary = AgentSkillSummary;
+export type CodexMcpServerStatus = AgentMcpServerStatus;
 
 interface SkillsListResponse {
   data: Array<{
@@ -116,13 +108,6 @@ interface TurnStartResponse {
   turn: { id: string; status: string };
 }
 
-export interface TurnResult {
-  turnId: string;
-  status: string;
-  text: string;
-  raw: unknown;
-}
-
 interface EarlyTurnState {
   text: string;
   completed: TurnResult | null;
@@ -135,28 +120,6 @@ interface TurnWaiter {
   timer: NodeJS.Timeout;
 }
 
-export interface StartThreadOptions {
-  cwd: string;
-  model?: string | null;
-  sandbox?: 'read-only' | 'workspace-write' | 'danger-full-access';
-  approvalPolicy?: 'untrusted' | 'on-request' | 'never';
-  developerInstructions?: string;
-  ephemeral?: boolean;
-  dynamicTools?: DynamicToolSpec[];
-}
-
-export interface StartTurnOptions {
-  threadId: string;
-  prompt: string;
-  cwd?: string;
-  model?: string | null;
-  effort?: string | null;
-  approvalPolicy?: 'untrusted' | 'on-request' | 'never';
-  skills?: Array<{ name: string; path: string }>;
-  /** Host-side completion deadline; never sent to App Server. */
-  timeoutMs?: number;
-}
-
 export interface CodexAppServerOptions {
   /** Optional app-owned Codex home. Omitted by CLI smoke tests to use the signed-in user runtime. */
   codexHome?: string;
@@ -164,7 +127,7 @@ export interface CodexAppServerOptions {
 
 const TURN_TIMEOUT_MS = 20 * 60 * 1_000;
 
-export class CodexAppServer extends EventEmitter {
+export class CodexAppServer extends EventEmitter implements AgentRuntime {
   readonly #configuredCodexHome: string | null;
   #child: ChildProcessWithoutNullStreams | null = null;
   #peer: JsonRpcPeer | null = null;

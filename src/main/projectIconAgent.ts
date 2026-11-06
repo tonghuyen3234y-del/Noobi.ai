@@ -8,7 +8,7 @@ import type {
   StartThreadOptions,
   StartTurnOptions,
   TurnResult,
-} from './codexAppServer.js';
+} from './agentRuntime.js';
 import {
   isValidProjectIconPng,
   PROJECT_ICON_RELATIVE_PATH,

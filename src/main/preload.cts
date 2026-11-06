@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
   AgentEvent,
+  AgentProviderId,
+  AgentProviderStatus,
   AppSettings,
   ApprovalAnswers,
   ApprovalDecision,
@@ -26,6 +28,8 @@ import type {
   ProjectInspectorPayload,
   ProjectIconData,
   ProjectRecord,
+  ProviderCredentialStatus,
+  ProvidersSnapshot,
   RunProjectInput,
   RuntimeStatus,
   SaveMcpServerInput,
@@ -42,6 +46,14 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
 const api: NoobiApi = {
   bootstrap: () => ipcRenderer.invoke('noobi:bootstrap') as Promise<BootstrapPayload>,
   refreshRuntime: () => ipcRenderer.invoke('noobi:runtime:refresh') as Promise<RuntimeStatus>,
+  listAgentProviders: () =>
+    ipcRenderer.invoke('noobi:agent:providers') as Promise<AgentProviderStatus[]>,
+  listProviderCredentials: () =>
+    ipcRenderer.invoke('noobi:agent:credentials') as Promise<ProviderCredentialStatus[]>,
+  setProviderApiKey: (provider: AgentProviderId, apiKey: string) =>
+    ipcRenderer.invoke('noobi:agent:set-key', provider, apiKey) as Promise<ProviderCredentialStatus[]>,
+  selectAgentProvider: (provider: AgentProviderId) =>
+    ipcRenderer.invoke('noobi:agent:select', provider) as Promise<ProvidersSnapshot>,
   startLogin: () => ipcRenderer.invoke('noobi:runtime:login') as Promise<LoginStartResult>,
   logout: () => ipcRenderer.invoke('noobi:runtime:logout') as Promise<RuntimeStatus>,
   chooseDirectory: () => ipcRenderer.invoke('noobi:dialog:directory') as Promise<string | null>,

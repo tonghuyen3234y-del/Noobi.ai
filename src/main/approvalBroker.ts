@@ -6,7 +6,7 @@ import type {
   ApprovalKind,
   ApprovalRequest,
 } from '../shared/contracts.js';
-import type { CodexAppServer } from './codexAppServer.js';
+import type { AgentRuntime } from './agentRuntime.js';
 import type { JsonRpcId, JsonRpcServerRequest } from './jsonRpcPeer.js';
 
 interface PendingApproval {
@@ -18,13 +18,13 @@ interface PendingApproval {
 const APPROVAL_TIMEOUT_MS = 2 * 60 * 1_000;
 
 export class ApprovalBroker extends EventEmitter {
-  readonly #runtime: CodexAppServer;
+  readonly #runtime: Pick<AgentRuntime, 'respondToServerRequest' | 'rejectServerRequest'>;
   readonly #projectForThread: (threadId: string) => string | null;
   readonly #pending = new Map<string, PendingApproval>();
   readonly #tokenForRequest = new Map<JsonRpcId, string>();
 
   constructor(
-    runtime: CodexAppServer,
+    runtime: Pick<AgentRuntime, 'respondToServerRequest' | 'rejectServerRequest'>,
     projectForThread: (threadId: string) => string | null,
   ) {
     super();

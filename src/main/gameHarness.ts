@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import {
-  CodexAppServer,
-  type DynamicToolSpec,
-  type StartTurnOptions,
-  type TurnResult,
-} from './codexAppServer.js';
+import type {
+  AgentRuntime,
+  DynamicToolSpec,
+  StartTurnOptions,
+  TurnResult,
+} from './agentRuntime.js';
 import type {
   AgentEvent,
   AgentEventKind,
@@ -262,10 +262,10 @@ Use "repair" only for concrete issues that the Implementer can address in the bo
  * additional turns on that same Implementer thread.
  */
 export class GameHarness extends EventEmitter {
-  readonly #runtime: CodexAppServer;
+  readonly #runtime: AgentRuntime;
   readonly #activeRuns = new Map<string, ActiveRun>();
 
-  constructor(runtime: CodexAppServer) {
+  constructor(runtime: AgentRuntime) {
     super();
     this.#runtime = runtime;
   }

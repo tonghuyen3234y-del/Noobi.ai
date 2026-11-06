@@ -1,6 +1,6 @@
 import type { AssetStore } from './assetStore.js';
 import type { AssetPlanStore, AssetPlanUpsertInput } from './assetPlanStore.js';
-import type { CodexAppServer, DynamicToolSpec, JsonValue } from './codexAppServer.js';
+import type { AgentRuntime, DynamicToolSpec, JsonValue } from './agentRuntime.js';
 import type { JsonRpcServerRequest } from './jsonRpcPeer.js';
 import {
   MediaGenerationPublicError,
@@ -39,7 +39,7 @@ export interface MediaToolProject {
 }
 
 export interface MediaToolBrokerOptions {
-  server: Pick<CodexAppServer, 'respondToServerRequest'>;
+  server: Pick<AgentRuntime, 'respondToServerRequest'>;
   assetStore: AssetStore;
   assetPlanStore?: Pick<
     AssetPlanStore,
@@ -240,36 +240,56 @@ export class MediaToolBroker {
       const params = readCallParams(request.params);
       project = await this.#options.resolveProject(params.threadId);
       if (!project) throw new ToolInputError('This tool call is not attached to an active Noobi.ai project');
-
-      let payload: unknown;
-      switch (params.tool) {
-        case 'noobi_asset_list':
-          payload = await this.#list(project, params.arguments);
-          break;
-        case 'noobi_asset_plan':
-          payload = await this.#plan(project, params.arguments);
-          break;
-        case 'noobi_asset_register':
-          payload = await this.#register(project, params.arguments);
-          break;
-        case 'noobi_audio_synthesize':
-          payload = await this.#synthesize(project, params.arguments);
-          break;
-        case 'noobi_image_generate':
-          payload = await this.#generate(project, 'image', params.arguments);
-          break;
-        case 'noobi_audio_generate':
-          payload = await this.#generate(project, 'audio', params.arguments);
-          break;
-        case 'noobi_model3d_generate':
-          payload = await this.#generate(project, 'model3d', params.arguments);
-          break;
-        default:
-          throw new ToolInputError('Unknown Noobi.ai media tool');
-      }
+      const payload = await this.#dispatch(project, params.tool, params.arguments);
       this.#respond(request.id, payload, true);
     } catch (error) {
       this.#respond(request.id, { error: safeError(error, project?.root) }, false);
+    }
+  }
+
+  /**
+   * Run a media tool outside the Codex server-request channel.
+   *
+   * Runtimes backed by a plain chat API receive `tool_calls` inline instead of
+   * emitting `item/tool/call`, so they call this directly. The result is the
+   * same bounded text the Codex path returns — never base64 or absolute paths.
+   */
+  async executeInline(
+    name: string,
+    args: Record<string, unknown>,
+    context: { cwd: string; threadId: string; turnId: string },
+  ): Promise<{ ok: boolean; content: string }> {
+    let project: MediaToolProject | null = null;
+    try {
+      project = await this.#options.resolveProject(context.threadId);
+      if (!project) {
+        return { ok: false, content: 'ERROR this tool call is not attached to an active Noobi.ai project' };
+      }
+      const payload = await this.#dispatch(project, name, args as JsonValue);
+      return { ok: true, content: boundedJson(payload) };
+    } catch (error) {
+      return { ok: false, content: `ERROR ${safeError(error, project?.root)}` };
+    }
+  }
+
+  async #dispatch(project: MediaToolProject, tool: string, args: JsonValue): Promise<unknown> {
+    switch (tool) {
+      case 'noobi_asset_list':
+        return this.#list(project, args);
+      case 'noobi_asset_plan':
+        return this.#plan(project, args);
+      case 'noobi_asset_register':
+        return this.#register(project, args);
+      case 'noobi_audio_synthesize':
+        return this.#synthesize(project, args);
+      case 'noobi_image_generate':
+        return this.#generate(project, 'image', args);
+      case 'noobi_audio_generate':
+        return this.#generate(project, 'audio', args);
+      case 'noobi_model3d_generate':
+        return this.#generate(project, 'model3d', args);
+      default:
+        throw new ToolInputError('Unknown Noobi.ai media tool');
     }
   }
 

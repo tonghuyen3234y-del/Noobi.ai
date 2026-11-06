@@ -18,6 +18,7 @@ import {
 
 import type {
   AgentEvent,
+  AgentProviderStatus,
   AppSettings,
   AssetPlanRecord,
   ApprovalAnswers,
@@ -64,6 +65,7 @@ export function App() {
   const [projects, setProjects] = useState<ProjectRecord[]>([]);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [agentProviders, setAgentProviders] = useState<AgentProviderStatus[]>([]);
   const [viewTransition, dispatchViewTransition] = useReducer(
     workspaceViewTransitionReducer,
     undefined,
@@ -118,6 +120,7 @@ export function App() {
       setProjects(state.projects);
       setSettings(state.settings);
       setRuntime(state.runtime);
+      setAgentProviders(state.agentProviders ?? []);
       setEvents(state.events ?? {});
       dispatchViewTransition({
         type: 'SYNC_PROJECTS',
@@ -637,6 +640,7 @@ export function App() {
             settings={settings}
             projects={projects}
             models={runtime.models}
+            agentProviders={agentProviders}
             imageGenerationAvailable={imageGenerationAvailable}
             busy={homeLaunching}
             focusSignal={homeFocusSignal}
@@ -657,6 +661,7 @@ export function App() {
           onClose={() => setShowSettings(false)}
           onSaved={setSettings}
           onRuntime={setRuntime}
+          onProvidersChanged={setAgentProviders}
         />
       ) : null}
 

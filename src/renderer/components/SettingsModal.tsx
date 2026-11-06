@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   Boxes,
   Cable,
   CheckCircle2,
@@ -18,11 +19,14 @@ import {
   SquareTerminal,
   SunMoon,
 } from 'lucide-react';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import type {
+  AgentProviderId,
+  AgentProviderStatus,
   AppSettings,
   LoginStartResult,
+  ProviderCredentialStatus,
   RuntimeStatus,
 } from '../../shared/contracts';
 import {
@@ -48,6 +52,44 @@ import {
 
 export type SettingsSection = 'account' | 'environment' | 'media' | 'defaults' | 'noobi' | 'skills' | 'mcp' | 'prompts' | 'appearance';
 
+const PROVIDER_CHOICES: ReadonlyArray<{ id: AgentProviderId; label: string; detail: string }> = [
+  {
+    id: 'codex',
+    label: 'Codex App Server',
+    detail: '官方运行时 · 自带工具链 · 需 ChatGPT 账号',
+  },
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    detail: 'API Key 直连 · 国内可用 · 需自备图片 API',
+  },
+];
+
+/** Keys compared to detect unsaved edits in the settings form. */
+const SETTINGS_COMPARE_KEYS = [
+  'defaultWorkspace',
+  'defaultModel',
+  'defaultEffort',
+  'defaultNoobiStageMode',
+  'defaultNoobiSoloSceneId',
+  'defaultNoobiSceneId',
+  'defaultNoobiPackId',
+  'defaultNoobiCrew',
+  'theme',
+  'agentProvider',
+] as const satisfies readonly (keyof AppSettings)[];
+
+function sameSettingValue(
+  key: keyof AppSettings,
+  left: AppSettings,
+  right: AppSettings,
+): boolean {
+  if (key === 'defaultNoobiCrew') {
+    return JSON.stringify(left.defaultNoobiCrew) === JSON.stringify(right.defaultNoobiCrew);
+  }
+  return left[key] === right[key];
+}
+
 interface SettingsModalProps {
   value: AppSettings;
   runtime: RuntimeStatus;
@@ -55,10 +97,12 @@ interface SettingsModalProps {
   onClose: () => void;
   onSaved: (settings: AppSettings) => void;
   onRuntime: (runtime: RuntimeStatus) => void;
+  /** Lets the shell refresh home-screen readiness after a provider switch. */
+  onProvidersChanged?: (providers: AgentProviderStatus[]) => void;
 }
 
 const SECTIONS = [
-  { id: 'account', label: 'Codex 账户', detail: '登录与运行时', icon: KeyRound },
+  { id: 'account', label: '运行时与账户', detail: 'Codex / DeepSeek', icon: KeyRound },
   { id: 'environment', label: '环境管理', detail: 'Node、Codex、Godot', icon: Cpu },
   { id: 'media', label: '媒体 API', detail: '图像、音频、3D', icon: Boxes },
   { id: 'defaults', label: '项目默认值', detail: '目录、模型、推理', icon: Settings2 },
@@ -76,6 +120,7 @@ export function SettingsModal({
   onClose,
   onSaved,
   onRuntime,
+  onProvidersChanged,
 }: SettingsModalProps) {
   const [section, setSection] = useState<SettingsSection>(initialSection);
   const [draft, setDraft] = useState(value);
@@ -96,6 +141,11 @@ export function SettingsModal({
     ? selectedModel.efforts
     : ['minimal', 'low', 'medium', 'high', 'xhigh'];
   const noobiStageMode = draft.defaultNoobiStageMode ?? DEFAULT_NOOBI_STAGE_MODE;
+
+  const settingsDirty = useMemo(
+    () => SETTINGS_COMPARE_KEYS.some((key) => !sameSettingValue(key, draft, value)),
+    [draft, value],
+  );
 
   async function refreshRuntime() {
     setBusy(true);
@@ -138,6 +188,33 @@ export function SettingsModal({
     }
   }
 
+  /**
+   * Switch the agent runtime immediately.
+   *
+   * The choice is persisted and the runtime hot-swapped in Main, so the user
+   * does not have to save the whole settings form for it to take effect. A
+   * provider that cannot run is rejected there and reported here.
+   */
+  async function selectProvider(provider: AgentProviderId) {
+    if (provider === draft.agentProvider) return;
+    setBusy(true);
+    setMessage('');
+    try {
+      const snapshot = await window.noobi.selectAgentProvider(provider);
+      setDraft((current) => ({ ...current, agentProvider: snapshot.settings.agentProvider }));
+      onSaved(snapshot.settings);
+      onRuntime(snapshot.runtime);
+      onProvidersChanged?.(snapshot.agentProviders);
+      setMessage(provider === 'deepseek'
+        ? '已切换到 DeepSeek。'
+        : '已切换到 Codex App Server。');
+    } catch (error) {
+      setMessage(toMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function chooseDirectory() {
     const directory = await window.noobi.chooseDirectory();
     if (directory) setDraft((current) => ({ ...current, defaultWorkspace: directory }));
@@ -159,7 +236,13 @@ export function SettingsModal({
   }
 
   function confirmPromptDiscard(): boolean {
-    return !promptDirty || window.confirm('提示词有未保存更改。离开此页面会放弃这些更改，是否继续？');
+    if (promptDirty && !window.confirm('提示词有未保存更改。离开此页面会放弃这些更改，是否继续？')) {
+      return false;
+    }
+    if (settingsDirty && !window.confirm('设置还有未保存的更改。离开会放弃这些更改，是否继续？')) {
+      return false;
+    }
+    return true;
   }
 
   function closeSettings() {
@@ -225,6 +308,8 @@ export function SettingsModal({
               onRefresh={() => void refreshRuntime()}
               onLogin={() => void startLogin()}
               onLogout={() => void logout()}
+              provider={draft.agentProvider}
+              onProviderChange={(provider) => void selectProvider(provider)}
             />
           ) : null}
 
@@ -444,6 +529,8 @@ function AccountSettings({
   onRefresh,
   onLogin,
   onLogout,
+  provider,
+  onProviderChange,
 }: {
   runtime: RuntimeStatus;
   login: LoginStartResult | null;
@@ -451,19 +538,94 @@ function AccountSettings({
   onRefresh: () => void;
   onLogin: () => void;
   onLogout: () => void;
+  provider: AgentProviderId;
+  onProviderChange: (provider: AgentProviderId) => void;
 }) {
+  const [providers, setProviders] = useState<AgentProviderStatus[]>([]);
+  const [credentials, setCredentials] = useState<ProviderCredentialStatus[]>([]);
+  const [apiKeyDraft, setApiKeyDraft] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyMessage, setKeyMessage] = useState('');
+
+  const refreshProviders = useCallback(async () => {
+    const [nextProviders, nextCredentials] = await Promise.all([
+      window.noobi.listAgentProviders(),
+      window.noobi.listProviderCredentials(),
+    ]);
+    setProviders(nextProviders);
+    setCredentials(nextCredentials);
+  }, []);
+
+  useEffect(() => {
+    void refreshProviders().catch(() => undefined);
+  }, [refreshProviders, provider]);
+
+  const activeProvider = providers.find((entry) => entry.id === provider);
+  const deepseekCredential = credentials.find((entry) => entry.provider === 'deepseek');
+  const isCodex = provider === 'codex';
+
+  const saveKey = async (): Promise<void> => {
+    setKeyBusy(true);
+    setKeyMessage('');
+    try {
+      const next = await window.noobi.setProviderApiKey('deepseek', apiKeyDraft);
+      setCredentials(next);
+      // Never keep the plaintext key in renderer state after saving.
+      setApiKeyDraft('');
+      setKeyMessage('已保存');
+      await refreshProviders();
+    } catch (error) {
+      setKeyMessage(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setKeyBusy(false);
+    }
+  };
+
   return (
     <section>
       <SettingsHeading
-        eyebrow="CODEX APP SERVER"
+        eyebrow="AGENT RUNTIME"
         title="运行时与账户"
-        description="Noobi 通过官方 App Server 使用 Codex；认证在系统浏览器中完成。"
+        description="Noobi 通过 Agent 运行时驱动游戏制作。Codex 自带完整工具链；DeepSeek 使用 API Key 直连，工具与会话由本机实现。"
         action={
           <button className="secondary-button compact" type="button" disabled={busy} onClick={onRefresh}>
             <RefreshCw size={13} className={busy ? 'spin' : ''} /> 刷新
           </button>
         }
       />
+
+      <div className="provider-picker">
+        {PROVIDER_CHOICES.map((choice) => (
+          <button
+            key={choice.id}
+            type="button"
+            className={`provider-option${provider === choice.id ? ' active' : ''}`}
+            disabled={busy}
+            onClick={() => onProviderChange(choice.id)}
+          >
+            <strong>{choice.label}</strong>
+            <small>{choice.detail}</small>
+          </button>
+        ))}
+      </div>
+
+      {activeProvider && !activeProvider.ready ? (
+        <div className="provider-blockers">
+          <AlertTriangle size={15} />
+          <div>
+            <strong>当前运行时还不可用</strong>
+            <ul>
+              {activeProvider.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
+      {activeProvider?.requiresImageApi ? (
+        <div className="provider-note">
+          该运行时不带内置图片生成，必须先在「媒体 API」中配置图像 API 才能开始制作。
+        </div>
+      ) : null}
 
       <div className={`runtime-card state-${runtime.state}`}>
         <div className="runtime-card-heading">
@@ -483,25 +645,58 @@ function AccountSettings({
         </dl>
       </div>
 
-      <div className="account-card">
-        <div className="account-icon"><SquareTerminal size={20} /></div>
-        <div className="account-copy">
-          <span>CHATGPT / CODEX ACCOUNT</span>
-          <strong>{runtime.account?.email ?? '尚未登录'}</strong>
-          <small>{runtime.account?.planType ?? runtime.account?.type ?? '使用 ChatGPT 账号授权 Codex'}</small>
+      {isCodex ? (
+        <div className="account-card">
+          <div className="account-icon"><SquareTerminal size={20} /></div>
+          <div className="account-copy">
+            <span>CHATGPT / CODEX ACCOUNT</span>
+            <strong>{runtime.account?.email ?? '尚未登录'}</strong>
+            <small>{runtime.account?.planType ?? runtime.account?.type ?? '使用 ChatGPT 账号授权 Codex'}</small>
+          </div>
+          {runtime.account ? (
+            <button className="secondary-button compact" type="button" disabled={busy} onClick={onLogout}>
+              <LogOut size={13} /> 退出
+            </button>
+          ) : (
+            <button className="primary-button compact" type="button" disabled={busy} onClick={onLogin}>
+              <LogIn size={13} /> 登录
+            </button>
+          )}
         </div>
-        {runtime.account ? (
-          <button className="secondary-button compact" type="button" disabled={busy} onClick={onLogout}>
-            <LogOut size={13} /> 退出
-          </button>
-        ) : (
-          <button className="primary-button compact" type="button" disabled={busy} onClick={onLogin}>
-            <LogIn size={13} /> 登录
-          </button>
-        )}
-      </div>
+      ) : (
+        <div className="settings-form provider-key-form">
+          <label>
+            <span>DeepSeek API Key</span>
+            <div className="path-control">
+              <input
+                type="password"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder={deepseekCredential?.hasApiKey ? '已保存（留空则不修改）' : 'sk-...'}
+                value={apiKeyDraft}
+                onChange={(event) => setApiKeyDraft(event.target.value)}
+              />
+              <button
+                type="button"
+                disabled={keyBusy || apiKeyDraft.trim().length === 0}
+                onClick={() => void saveKey()}
+              >
+                <KeyRound size={14} /> 保存
+              </button>
+            </div>
+          </label>
+          <p className="settings-hint">
+            Key 使用系统密钥库加密后保存在本机，不会写入项目目录，也不会传给 Agent 或子进程。
+            {deepseekCredential && !deepseekCredential.encryptionAvailable
+              ? ' 当前系统密钥加密不可用，无法安全保存。'
+              : ''}
+            {deepseekCredential?.hasApiKey ? ' 已保存的 Key 可留空后再次保存以保留。' : ''}
+          </p>
+          {keyMessage ? <p className="settings-hint">{keyMessage}</p> : null}
+        </div>
+      )}
 
-      {login ? (
+      {isCodex && login ? (
         <div className="login-instructions">
           <Monitor size={17} />
           <div>

@@ -218,6 +218,32 @@ export interface AppSettings {
   defaultNoobiPackId: NoobiPackId;
   defaultNoobiCrew: NoobiCrewMember[];
   theme: 'dark' | 'light';
+  /** Which agent runtime drives game production. Defaults to `codex`. */
+  agentProvider: AgentProviderId;
+  /** Selected model for the active provider, per provider. */
+  providerModels: Partial<Record<AgentProviderId, string>>;
+}
+
+export type AgentProviderId = 'codex' | 'deepseek';
+
+export interface AgentProviderStatus {
+  id: AgentProviderId;
+  /** Whether this provider is the currently active one. */
+  active: boolean;
+  /** Whether the provider can start a production run right now. */
+  ready: boolean;
+  /** Human-readable blockers; empty when ready. */
+  blockers: string[];
+  /** Providers that ship no built-in image generation must use an image API. */
+  requiresImageApi: boolean;
+}
+
+export interface ProviderCredentialStatus {
+  provider: AgentProviderId;
+  /** True when a key is stored. The key itself is never returned. */
+  hasApiKey: boolean;
+  /** Whether OS-backed encryption is available for storing the key. */
+  encryptionAvailable: boolean;
 }
 
 export type EnvironmentToolId = 'node' | 'codex' | 'godot';
@@ -271,6 +297,10 @@ export interface BootstrapPayload {
   settings: AppSettings;
   runtime: RuntimeStatus;
   events?: Record<string, AgentEvent[]>;
+  /** Readiness of every agent provider, for the settings UI. */
+  agentProviders?: AgentProviderStatus[];
+  /** Credential presence per provider; never contains key material. */
+  providerCredentials?: ProviderCredentialStatus[];
 }
 
 export interface CreateProjectInput {
@@ -543,9 +573,22 @@ export interface LoginStartResult {
   userCode?: string;
 }
 
+export interface ProvidersSnapshot {
+  settings: AppSettings;
+  runtime: RuntimeStatus;
+  agentProviders: AgentProviderStatus[];
+}
+
 export interface NoobiApi {
   bootstrap(): Promise<BootstrapPayload>;
   refreshRuntime(): Promise<RuntimeStatus>;
+  /** Readiness of every agent provider plus the active one's runtime status. */
+  listAgentProviders(): Promise<AgentProviderStatus[]>;
+  /** Credential presence only; the key itself is never returned. */
+  listProviderCredentials(): Promise<ProviderCredentialStatus[]>;
+  /** Passing an empty string clears the stored key. */
+  setProviderApiKey(provider: AgentProviderId, apiKey: string): Promise<ProviderCredentialStatus[]>;
+  selectAgentProvider(provider: AgentProviderId): Promise<ProvidersSnapshot>;
   startLogin(): Promise<LoginStartResult>;
   logout(): Promise<RuntimeStatus>;
   chooseDirectory(): Promise<string | null>;

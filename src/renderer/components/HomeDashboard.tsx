@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowUp,
   ArrowRight,
   Bot,
@@ -24,6 +25,7 @@ import {
 } from 'react';
 
 import type {
+  AgentProviderStatus,
   AppSettings,
   ModelOption,
   ProjectRecord,
@@ -86,6 +88,7 @@ interface HomeDashboardProps {
   onOpenRail: () => void;
   onOpenSettings: (section?: 'account' | 'environment' | 'media') => void;
   onToggleTheme: () => void;
+  agentProviders?: readonly AgentProviderStatus[];
 }
 
 export function HomeDashboard({
@@ -101,6 +104,7 @@ export function HomeDashboard({
   onOpenRail,
   onOpenSettings,
   onToggleTheme,
+  agentProviders = [],
 }: HomeDashboardProps) {
   const [idea, setIdea] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -119,8 +123,27 @@ export function HomeDashboard({
     [model, models],
   );
   const accountName = accountDisplayName(runtime);
-  const runtimeReady = runtime.state === 'ready' && Boolean(runtime.account);
+  // The active provider decides what "ready" means: Codex needs a signed-in
+  // account, an API-key provider already reports one, but it also needs an
+  // image API because it has no built-in ImageGen fallback.
+  const activeProvider = agentProviders.find((provider) => provider.active) ?? null;
+  const usesApiKeyProvider = activeProvider ? activeProvider.requiresImageApi : false;
+  const runtimeReady = runtime.state === 'ready'
+    && Boolean(runtime.account)
+    && (activeProvider ? activeProvider.ready : true);
   const launchReady = runtimeReady && imageGenerationAvailable && idea.trim().length > 0 && !busy;
+  const runtimeBlocker = activeProvider && !activeProvider.ready
+    ? activeProvider.blockers[0] ?? '当前运行时不可用'
+    : usesApiKeyProvider
+      ? '请先填写 API Key'
+      : '请先让 Codex 运行时就绪并完成登录';
+  const launchBlocker = !runtimeReady
+    ? runtimeBlocker
+    : !imageGenerationAvailable
+      ? usesApiKeyProvider
+        ? '当前运行时不带内置图片生成，请先配置图像 API'
+        : '请先配置图像服务或修复 Codex ImageGen'
+      : idea.trim() ? '创建项目并启动 Agent' : '先描述游戏创意';
 
   useEffect(() => {
     if (models.length === 0) {
@@ -208,10 +231,11 @@ export function HomeDashboard({
   }
 
   function handlePromptKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && launchReady) {
-      event.preventDefault();
-      void submit();
-    }
+    if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+    // Shift+Enter inserts a newline; a plain Enter submits, matching chat conventions.
+    if (event.shiftKey) return;
+    event.preventDefault();
+    if (launchReady) void submit();
   }
 
   return (
@@ -335,12 +359,7 @@ export function HomeDashboard({
                   className="home-create-button"
                   type="button"
                   aria-label={busy ? '正在创建游戏' : '发送游戏创意'}
-                  disabled={!launchReady}
-                  title={!runtimeReady
-                    ? '请先让 Codex 运行时就绪并完成登录'
-                    : !imageGenerationAvailable
-                      ? '请先配置图像服务或修复 Codex ImageGen'
-                      : idea.trim() ? '创建项目并启动 Agent' : '先描述游戏创意'}
+                  title={launchBlocker}
                   onClick={() => void submit()}
                 >
                   {busy
@@ -364,6 +383,27 @@ export function HomeDashboard({
                 </button>
               ))}
             </div>
+
+            {!runtimeReady ? (
+              <p className="home-launch-blocker" role="status">
+                <AlertTriangle size={14} aria-hidden="true" />
+                <span>还不能开始：{runtimeBlocker}。</span>
+                <button type="button" onClick={() => onOpenSettings('account')}>
+                  {usesApiKeyProvider ? '去设置' : '去登录'}
+                </button>
+              </p>
+            ) : !imageGenerationAvailable ? (
+              <p className="home-launch-blocker" role="status">
+                <AlertTriangle size={14} aria-hidden="true" />
+                <span>
+                  还不能开始：
+                  {usesApiKeyProvider
+                    ? '当前运行时不带内置图片生成，需要配置图像 API Key。'
+                    : '需要配置图像 API Key，或修复 Codex ImageGen。'}
+                </span>
+                <button type="button" onClick={() => onOpenSettings('media')}>去配置</button>
+              </p>
+            ) : null}
           </div>
         </section>
 

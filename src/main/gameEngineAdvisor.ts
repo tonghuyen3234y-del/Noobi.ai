@@ -1,10 +1,10 @@
 import type { GameEngine } from '../shared/contracts.js';
 import type {
-  CodexAppServer,
+  AgentRuntime,
   StartThreadOptions,
   StartTurnOptions,
   TurnResult,
-} from './codexAppServer.js';
+} from './agentRuntime.js';
 
 export type GameEngineDecisionConfidence = 'high' | 'medium' | 'low';
 export type GameEngineDecisionReason =
@@ -75,7 +75,7 @@ const CONFIDENCE_LEVELS = new Set<GameEngineDecisionConfidence>(['high', 'medium
 export class GameEngineAdvisor {
   readonly #runtime: EngineAdvisorRuntime;
 
-  constructor(runtime: CodexAppServer | EngineAdvisorRuntime) {
+  constructor(runtime: AgentRuntime | EngineAdvisorRuntime) {
     this.#runtime = runtime;
   }
 

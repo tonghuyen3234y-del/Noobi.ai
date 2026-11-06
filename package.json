@@ -40,6 +40,7 @@
     "test:watch": "vitest",
     "protocol:generate": "tsx scripts/generate-codex-protocol.ts",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
+    "probe:deepseek": "tsx scripts/deepseek-probe.ts",
     "smoke:harness": "tsx scripts/harness-smoke.ts",
     "smoke:media": "tsx scripts/media-smoke.ts",
     "smoke:image": "tsx scripts/image-smoke.ts",

@@ -1,8 +1,8 @@
 import type {
-  CodexAppServer,
-  CodexMcpServerStatus,
+  AgentMcpServerStatus,
+  AgentRuntime,
   JsonValue,
-} from './codexAppServer.js';
+} from './agentRuntime.js';
 
 const MCP_ID = /^[a-zA-Z0-9_-]{1,64}$/u;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/u;
@@ -37,9 +37,10 @@ export interface McpServerSetting {
 }
 
 type McpRuntime = Pick<
-  CodexAppServer,
+  AgentRuntime,
   'readConfig' | 'writeConfigValue' | 'reloadMcpServers' | 'listMcpServerStatuses'
 >;
+export type CodexMcpServerStatus = AgentMcpServerStatus;
 
 /**
  * A narrow, validated view over Codex's native `mcp_servers` config. It never
