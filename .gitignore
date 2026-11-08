@@ -5,6 +5,7 @@ coverage/
 *.log
 .DS_Store
 .noobi-smoke/
+.logs/
 
 # Local credentials and machine-specific state
 .env*

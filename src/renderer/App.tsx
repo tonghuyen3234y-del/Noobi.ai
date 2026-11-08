@@ -255,16 +255,16 @@ export function App() {
   function ensureRunReady(): boolean {
     setError('');
     if (!runtime) {
-      setError('Noobi.ai 正在读取 Codex 运行时，请稍后再试。');
+      setError('Noobi.ai 正在读取 Agent 运行时，请稍后再试。');
       return false;
     }
     if (runtime.state !== 'ready') {
-      setError('Codex App Server 尚未就绪，请先检查运行时或完成登录。');
+      setError('当前的 Agent 引擎尚未就绪，请先在设置中检查 API Key 或运行时状态。');
       openSettings();
       return false;
     }
     if (!runtime.account) {
-      setError('请先登录 ChatGPT，再启动游戏 Agent。');
+      setError('当前引擎还没有可用凭据：Qwen 需要百炼 API Key，ChatGPT 登录则需要完成授权。');
       openSettings();
       return false;
     }

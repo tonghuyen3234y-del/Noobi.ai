@@ -170,18 +170,20 @@ export function Composer({
             setPrompt(event.target.value);
           }}
           onKeyDown={(event) => {
-            if (
-              (event.metaKey || event.ctrlKey) &&
-              event.key === 'Enter' &&
-              !disabled
-            ) {
-              event.preventDefault();
-              void submit();
-            }
+            if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+            // Shift+Enter inserts a newline; a plain Enter sends.
+            if (event.shiftKey) return;
+            event.preventDefault();
+            if (!disabled) void submit();
           }}
         />
         <div className="composer-toolbar">
           <AssetRequirement variant="chip" imageGenerationAvailable={imageGenerationAvailable} />
+          {disabled ? (
+            <span className="composer-blocked-hint" role="status">
+              暂时不能发送：请先让当前引擎就绪（百炼 API Key 或 ChatGPT 登录），并按需配置图像 API。
+            </span>
+          ) : null}
           <div className="composer-controls">
             <label title={activeModel?.description ?? '模型'}>
               <span className="sr-only">模型</span>
@@ -246,7 +248,7 @@ export function Composer({
                 className="composer-action is-send"
                 type="button"
                 aria-label="发送制作要求"
-                title="发送制作要求（⌘/Ctrl + Enter）"
+                title="发送制作要求（Enter 发送，Shift + Enter 换行）"
                 disabled={disabled || models.length === 0}
                 onClick={() => void submit()}
               >

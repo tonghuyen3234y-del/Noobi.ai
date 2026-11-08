@@ -181,6 +181,8 @@ export interface ModelOption {
   isDefault: boolean;
   defaultEffort: string;
   efforts: string[];
+  /** True when the model accepts image input (vision), not image generation. */
+  acceptsImages?: boolean;
 }
 
 export interface RuntimeAccount {
@@ -224,7 +226,11 @@ export interface AppSettings {
   providerModels: Partial<Record<AgentProviderId, string>>;
 }
 
-export type AgentProviderId = 'codex' | 'deepseek';
+/**
+ * Model service behind the Codex Agent framework.
+ * `openai` signs in with ChatGPT; `qwen` uses one DashScope API key.
+ */
+export type AgentProviderId = 'openai' | 'qwen';
 
 export interface AgentProviderStatus {
   id: AgentProviderId;
@@ -234,6 +240,8 @@ export interface AgentProviderStatus {
   ready: boolean;
   /** Human-readable blockers; empty when ready. */
   blockers: string[];
+  /** Non-blocking caveats shown next to the provider. */
+  warnings: string[];
   /** Providers that ship no built-in image generation must use an image API. */
   requiresImageApi: boolean;
 }
@@ -579,6 +587,14 @@ export interface ProvidersSnapshot {
   agentProviders: AgentProviderStatus[];
 }
 
+export interface ApiKeySaveResult {
+  /** Credential presence after the save; never key material. */
+  credentials: ProviderCredentialStatus[];
+  /** The rebuilt engine's status, so the settings card updates without a restart. */
+  runtime: RuntimeStatus;
+  agentProviders: AgentProviderStatus[];
+}
+
 export interface NoobiApi {
   bootstrap(): Promise<BootstrapPayload>;
   refreshRuntime(): Promise<RuntimeStatus>;
@@ -587,7 +603,7 @@ export interface NoobiApi {
   /** Credential presence only; the key itself is never returned. */
   listProviderCredentials(): Promise<ProviderCredentialStatus[]>;
   /** Passing an empty string clears the stored key. */
-  setProviderApiKey(provider: AgentProviderId, apiKey: string): Promise<ProviderCredentialStatus[]>;
+  setProviderApiKey(provider: AgentProviderId, apiKey: string): Promise<ApiKeySaveResult>;
   selectAgentProvider(provider: AgentProviderId): Promise<ProvidersSnapshot>;
   startLogin(): Promise<LoginStartResult>;
   logout(): Promise<RuntimeStatus>;

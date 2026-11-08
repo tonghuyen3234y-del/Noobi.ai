@@ -81,7 +81,7 @@ export function ApprovalModal({
     <Modal
       eyebrow={KIND_LABELS[approval.kind]}
       title={approval.title}
-      description="Codex 正在等待你的明确决定；未批准前不会继续这一步。"
+      description="Agent 正在等待你的明确决定；未批准前不会继续这一步。"
       className="approval-modal"
       footer={
         <>

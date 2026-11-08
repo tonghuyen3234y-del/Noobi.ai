@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   AgentProviderId,
   AgentProviderStatus,
+  ApiKeySaveResult,
   AppSettings,
   ApprovalAnswers,
   ApprovalDecision,
@@ -51,7 +52,7 @@ const api: NoobiApi = {
   listProviderCredentials: () =>
     ipcRenderer.invoke('noobi:agent:credentials') as Promise<ProviderCredentialStatus[]>,
   setProviderApiKey: (provider: AgentProviderId, apiKey: string) =>
-    ipcRenderer.invoke('noobi:agent:set-key', provider, apiKey) as Promise<ProviderCredentialStatus[]>,
+    ipcRenderer.invoke('noobi:agent:set-key', provider, apiKey) as Promise<ApiKeySaveResult>,
   selectAgentProvider: (provider: AgentProviderId) =>
     ipcRenderer.invoke('noobi:agent:select', provider) as Promise<ProvidersSnapshot>,
   startLogin: () => ipcRenderer.invoke('noobi:runtime:login') as Promise<LoginStartResult>,

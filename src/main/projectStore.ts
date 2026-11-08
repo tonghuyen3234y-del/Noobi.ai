@@ -55,6 +55,7 @@ import {
   isTargetFrameRate,
 } from '../shared/contracts.js';
 import { createWorkspaceTemplate } from './workspaceTemplate.js';
+import { DEFAULT_AGENT_PROVIDER } from './agentProvider.js';
 
 const STORE_VERSION = 1;
 const MAX_FILE_BYTES = 1024 * 1024;
@@ -906,10 +907,14 @@ function validateSettings(value: unknown): AppSettings {
     ? DEFAULT_NOOBI_CREW
     : value.defaultNoobiCrew;
   if (value.theme !== 'dark' && value.theme !== 'light') throw new Error('Theme setting is invalid');
-  // Existing installs predate agent provider selection: default to Codex so an
-  // upgrade never silently switches the engine that writes user workspaces.
-  const agentProvider = value.agentProvider === undefined ? 'codex' : value.agentProvider;
-  if (agentProvider !== 'codex' && agentProvider !== 'deepseek') {
+  // Installs created before the architecture change stored `codex`/`deepseek`.
+  // Both meant "the built-in engine", which is now the ChatGPT login route; a
+  // saved value must never make the app refuse to start.
+  const storedProvider = value.agentProvider === 'codex' || value.agentProvider === 'deepseek'
+    ? 'openai'
+    : value.agentProvider;
+  const agentProvider = storedProvider === undefined ? DEFAULT_AGENT_PROVIDER : storedProvider;
+  if (agentProvider !== 'openai' && agentProvider !== 'qwen') {
     throw new Error('Agent provider setting is invalid');
   }
   return {
@@ -929,14 +934,14 @@ function validateSettings(value: unknown): AppSettings {
 
 function validatedProviderModels(
   value: unknown,
-): Partial<Record<'codex' | 'deepseek', string>> {
+): Partial<Record<'openai' | 'qwen', string>> {
   if (value === undefined) return {};
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Provider model setting is invalid');
   }
   const record = value as Record<string, unknown>;
-  const result: Partial<Record<'codex' | 'deepseek', string>> = {};
-  for (const provider of ['codex', 'deepseek'] as const) {
+  const result: Partial<Record<'openai' | 'qwen', string>> = {};
+  for (const provider of ['openai', 'qwen'] as const) {
     const model = record[provider];
     if (model === undefined) continue;
     if (typeof model !== 'string' || model.length === 0 || model.length > 200) {
@@ -958,7 +963,7 @@ function defaultSettings(defaultWorkspace: string): AppSettings {
     defaultNoobiPackId: DEFAULT_NOOBI_PACK_ID,
     defaultNoobiCrew: DEFAULT_NOOBI_CREW.map((member) => ({ ...member })),
     theme: 'light',
-    agentProvider: 'codex',
+    agentProvider: DEFAULT_AGENT_PROVIDER,
     providerModels: {},
   };
 }

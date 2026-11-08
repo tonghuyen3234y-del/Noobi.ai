@@ -293,6 +293,21 @@ export class MediaGenerationService {
         if (provider.preset.adapter === 'minimax-audio') throw await miniMaxHttpError(response);
         throw new Error(`Media provider returned HTTP ${response.status}`);
       }
+      if (provider.preset.adapter === 'dashscope-image') {
+        // Image synthesis is queued; resolve the task into a media URL first.
+        const taskUrl = await this.#awaitDashScopeTask(
+          response,
+          provider,
+          controller.signal,
+        );
+        return await this.#downloadGeneratedMedia(
+          taskUrl,
+          endpoint,
+          kind,
+          controller.signal,
+          { allowForeignOrigin: true },
+        );
+      }
       return await this.#readProviderResponse(
         response,
         kind,
@@ -360,15 +375,79 @@ export class MediaGenerationService {
     return this.#downloadGeneratedMedia(outputUrl, providerEndpoint, kind, signal);
   }
 
+  /**
+   * Resolve a DashScope async task into a downloadable media URL.
+   *
+   * The submission returns `output.task_id`; results live at
+   * `/api/v1/tasks/{id}` and are `PENDING` -> `RUNNING` -> `SUCCEEDED`. The
+   * returned URL carries a signature, so it must be used verbatim.
+   */
+  async #awaitDashScopeTask(
+    response: Response,
+    provider: Readonly<ResolvedMediaProvider>,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const submitBody = await readBoundedBody(response, MAX_JSON_OVERHEAD_BYTES);
+    let submitted: unknown;
+    try {
+      submitted = JSON.parse(submitBody.toString('utf8'));
+    } catch {
+      throw new Error('Qwen-Image did not return a task id');
+    }
+    const taskId = readDashScopeTaskId(submitted);
+    if (!taskId) throw new Error('Qwen-Image did not return a task id');
+
+    const base = new URL(normalizeProviderEndpoint(provider.endpoint));
+    const taskUrl = `${base.origin}/api/v1/tasks/${encodeURIComponent(taskId)}`;
+    const authHeader: Record<string, string> = provider.apiKey
+      ? { authorization: `Bearer ${provider.apiKey}` }
+      : {};
+    const deadline = Date.now() + this.#requestTimeoutMs;
+
+    while (Date.now() < deadline) {
+      if (signal.aborted) throw new Error('Qwen-Image task was cancelled');
+      await delay(DASH_SCOPE_POLL_INTERVAL_MS);
+      const poll = await this.#fetch(taskUrl, {
+        method: 'GET',
+        redirect: 'manual',
+        signal,
+        headers: authHeader,
+      });
+      assertNoRedirect(poll);
+      if (!poll.ok) throw new Error(`Qwen-Image task poll returned HTTP ${poll.status}`);
+      const body = await readBoundedBody(poll, MAX_JSON_OVERHEAD_BYTES);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body.toString('utf8'));
+      } catch {
+        throw new Error('Qwen-Image task poll returned invalid JSON');
+      }
+      const status = readDashScopeTaskStatus(parsed);
+      if (status === 'SUCCEEDED') {
+        const url = readDashScopeResultUrl(parsed);
+        if (!url) throw new Error('Qwen-Image task finished without a media URL');
+        return url;
+      }
+      if (status === 'FAILED' || status === 'CANCELED' || status === 'UNKNOWN') {
+        throw new Error(`Qwen-Image task ended with status ${status}`);
+      }
+    }
+    throw new Error('Qwen-Image task timed out');
+  }
+
   async #downloadGeneratedMedia(
     urlValue: string,
     providerEndpoint: string,
     kind: MediaProviderKind,
     signal: AbortSignal,
+    options: { allowForeignOrigin?: boolean } = {},
   ): Promise<GeneratedBytes> {
     const safeUrl = normalizeProviderEndpoint(urlValue);
-    if (new URL(safeUrl).origin !== new URL(providerEndpoint).origin) {
+    if (!options.allowForeignOrigin && new URL(safeUrl).origin !== new URL(providerEndpoint).origin) {
       throw new Error('Generated media download URL must share the configured provider endpoint origin');
+    }
+    if (options.allowForeignOrigin && !/^https:$/u.test(new URL(safeUrl).protocol)) {
+      throw new Error('Generated media download URL must use HTTPS');
     }
     const response = await this.#fetch(safeUrl, {
       method: 'GET',
@@ -512,6 +591,8 @@ function requestHeaders(
   }
   if (provider.auth === 'bearer' && provider.apiKey) headers.Authorization = `Bearer ${provider.apiKey}`;
   if (provider.auth === 'x-api-key' && provider.apiKey) headers['xi-api-key'] = provider.apiKey;
+  // DashScope always runs image synthesis as a queued task.
+  if (provider.preset.adapter === 'dashscope-image') headers['X-DashScope-Async'] = 'enable';
   return headers;
 }
 
@@ -551,6 +632,16 @@ function requestBody(
       };
     case 'minimax-audio':
       return miniMaxRequestBody(kind, prompt, model, options);
+    case 'dashscope-image': {
+      const width = typeof options.width === 'number' ? options.width : 1024;
+      const height = typeof options.height === 'number' ? options.height : 1024;
+      // DashScope uses `WIDTH*HEIGHT`, not the `WxH` used elsewhere.
+      return {
+        model,
+        input: { prompt },
+        parameters: { size: `${width}*${height}`, n: 1, prompt_extend: true },
+      };
+    }
     case 'generic-json':
       return { kind, prompt, model, options };
   }
@@ -1031,4 +1122,36 @@ function safeStem(value: string): string {
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/** How often to poll a queued DashScope task. */
+const DASH_SCOPE_POLL_INTERVAL_MS = 2_000;
+
+function readDashScopeTaskId(value: unknown): string | null {
+  const output = asRecord(asRecord(value)?.output);
+  const id = output?.task_id;
+  return typeof id === 'string' && id ? id : null;
+}
+
+function readDashScopeTaskStatus(value: unknown): string {
+  const output = asRecord(asRecord(value)?.output);
+  const status = output?.task_status;
+  if (typeof status === 'string') return status.toUpperCase();
+  return 'UNKNOWN';
+}
+
+function readDashScopeResultUrl(value: unknown): string | null {
+  const output = asRecord(asRecord(value)?.output);
+  const results = output?.results;
+  if (!Array.isArray(results)) return null;
+  const first = asRecord(results[0]);
+  const url = first?.url;
+  return typeof url === 'string' && url ? url : null;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(resolvePromise, milliseconds);
+    timer.unref?.();
+  });
 }

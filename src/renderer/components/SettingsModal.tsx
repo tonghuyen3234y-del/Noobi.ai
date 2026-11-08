@@ -54,14 +54,14 @@ export type SettingsSection = 'account' | 'environment' | 'media' | 'defaults' |
 
 const PROVIDER_CHOICES: ReadonlyArray<{ id: AgentProviderId; label: string; detail: string }> = [
   {
-    id: 'codex',
-    label: 'Codex App Server',
-    detail: '官方运行时 · 自带工具链 · 需 ChatGPT 账号',
+    id: 'openai',
+    label: 'ChatGPT 登录',
+    detail: 'Codex 原生 · 无需 API Key · 需 ChatGPT 账号',
   },
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    detail: 'API Key 直连 · 国内可用 · 需自备图片 API',
+    id: 'qwen',
+    label: 'Qwen（百炼）',
+    detail: '一个百炼 API Key · 编程 + 读图 + 生图',
   },
 ];
 
@@ -102,7 +102,7 @@ interface SettingsModalProps {
 }
 
 const SECTIONS = [
-  { id: 'account', label: '运行时与账户', detail: 'Codex / DeepSeek', icon: KeyRound },
+  { id: 'account', label: '运行时与账户', detail: 'ChatGPT / Qwen', icon: KeyRound },
   { id: 'environment', label: '环境管理', detail: 'Node、Codex、Godot', icon: Cpu },
   { id: 'media', label: '媒体 API', detail: '图像、音频、3D', icon: Boxes },
   { id: 'defaults', label: '项目默认值', detail: '目录、模型、推理', icon: Settings2 },
@@ -205,9 +205,9 @@ export function SettingsModal({
       onSaved(snapshot.settings);
       onRuntime(snapshot.runtime);
       onProvidersChanged?.(snapshot.agentProviders);
-      setMessage(provider === 'deepseek'
-        ? '已切换到 DeepSeek。'
-        : '已切换到 Codex App Server。');
+      setMessage(provider === 'qwen'
+        ? '已切换到 Qwen（百炼）。'
+        : '已切换到 ChatGPT 登录。');
     } catch (error) {
       setMessage(toMessage(error));
     } finally {
@@ -310,6 +310,8 @@ export function SettingsModal({
               onLogout={() => void logout()}
               provider={draft.agentProvider}
               onProviderChange={(provider) => void selectProvider(provider)}
+              onRuntime={onRuntime}
+              onProvidersChanged={onProvidersChanged}
             />
           ) : null}
 
@@ -531,6 +533,8 @@ function AccountSettings({
   onLogout,
   provider,
   onProviderChange,
+  onRuntime,
+  onProvidersChanged,
 }: {
   runtime: RuntimeStatus;
   login: LoginStartResult | null;
@@ -540,6 +544,8 @@ function AccountSettings({
   onLogout: () => void;
   provider: AgentProviderId;
   onProviderChange: (provider: AgentProviderId) => void;
+  onRuntime: (runtime: RuntimeStatus) => void;
+  onProvidersChanged?: (providers: AgentProviderStatus[]) => void;
 }) {
   const [providers, setProviders] = useState<AgentProviderStatus[]>([]);
   const [credentials, setCredentials] = useState<ProviderCredentialStatus[]>([]);
@@ -561,19 +567,25 @@ function AccountSettings({
   }, [refreshProviders, provider]);
 
   const activeProvider = providers.find((entry) => entry.id === provider);
-  const deepseekCredential = credentials.find((entry) => entry.provider === 'deepseek');
-  const isCodex = provider === 'codex';
+  const qwenCredential = credentials.find((entry) => entry.provider === 'qwen');
+  const isOpenAi = provider === 'openai';
 
   const saveKey = async (): Promise<void> => {
     setKeyBusy(true);
     setKeyMessage('');
     try {
-      const next = await window.noobi.setProviderApiKey('deepseek', apiKeyDraft);
-      setCredentials(next);
+      const result = await window.noobi.setProviderApiKey('qwen', apiKeyDraft);
+      setCredentials(result.credentials);
+      // Saving a key rebuilds the engine in Main, so adopt its new status right
+      // away instead of leaving the stale "no API key" card on screen.
+      onRuntime(result.runtime);
+      onProvidersChanged?.(result.agentProviders);
+      setProviders(result.agentProviders);
       // Never keep the plaintext key in renderer state after saving.
       setApiKeyDraft('');
-      setKeyMessage('已保存');
-      await refreshProviders();
+      setKeyMessage(result.runtime.state === 'ready'
+        ? '已保存，Qwen 引擎已就绪。'
+        : `已保存，但引擎仍未就绪：${result.runtime.error ?? '请稍后重试'}`);
     } catch (error) {
       setKeyMessage(error instanceof Error ? error.message : '保存失败');
     } finally {
@@ -586,7 +598,7 @@ function AccountSettings({
       <SettingsHeading
         eyebrow="AGENT RUNTIME"
         title="运行时与账户"
-        description="Noobi 通过 Agent 运行时驱动游戏制作。Codex 自带完整工具链；DeepSeek 使用 API Key 直连，工具与会话由本机实现。"
+        description="两条路线共用同一套 Codex Agent 框架与游戏流水线，差别只在背后的模型服务。"
         action={
           <button className="secondary-button compact" type="button" disabled={busy} onClick={onRefresh}>
             <RefreshCw size={13} className={busy ? 'spin' : ''} /> 刷新
@@ -613,7 +625,7 @@ function AccountSettings({
         <div className="provider-blockers">
           <AlertTriangle size={15} />
           <div>
-            <strong>当前运行时还不可用</strong>
+            <strong>当前引擎还不可用</strong>
             <ul>
               {activeProvider.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}
             </ul>
@@ -621,9 +633,9 @@ function AccountSettings({
         </div>
       ) : null}
 
-      {activeProvider?.requiresImageApi ? (
+      {activeProvider && (activeProvider.warnings?.length ?? 0) > 0 ? (
         <div className="provider-note">
-          该运行时不带内置图片生成，必须先在「媒体 API」中配置图像 API 才能开始制作。
+          {(activeProvider.warnings ?? []).map((warning) => <p key={warning}>{warning}</p>)}
         </div>
       ) : null}
 
@@ -638,14 +650,14 @@ function AccountSettings({
         {runtime.error ? <p className="runtime-error">{runtime.error}</p> : null}
         <dl>
           <div><dt>Binary</dt><dd>{runtime.binaryPath ?? '尚未定位'}</dd></div>
-          <div><dt>Codex Home</dt><dd>{runtime.codexHome ?? '尚未启动'}</dd></div>
+          <div><dt>Home</dt><dd>{runtime.codexHome ?? '尚未启动'}</dd></div>
           <div><dt>Models</dt><dd>{runtime.models.length}</dd></div>
           <div><dt>Image route</dt><dd>{runtime.capabilities.externalImageGeneration ? '外部 API 优先' : runtime.capabilities.imageGeneration ? 'Codex ImageGen' : '当前不可用'}</dd></div>
           <div><dt>Media tools</dt><dd>{runtime.state === 'ready' ? '素材库 / 音效已接入' : '等待运行时'}</dd></div>
         </dl>
       </div>
 
-      {isCodex ? (
+      {isOpenAi ? (
         <div className="account-card">
           <div className="account-icon"><SquareTerminal size={20} /></div>
           <div className="account-copy">
@@ -666,13 +678,13 @@ function AccountSettings({
       ) : (
         <div className="settings-form provider-key-form">
           <label>
-            <span>DeepSeek API Key</span>
+            <span>阿里云百炼 API Key</span>
             <div className="path-control">
               <input
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
-                placeholder={deepseekCredential?.hasApiKey ? '已保存（留空则不修改）' : 'sk-...'}
+                placeholder={qwenCredential?.hasApiKey ? '已保存（留空则不修改）' : 'sk-...'}
                 value={apiKeyDraft}
                 onChange={(event) => setApiKeyDraft(event.target.value)}
               />
@@ -687,16 +699,16 @@ function AccountSettings({
           </label>
           <p className="settings-hint">
             Key 使用系统密钥库加密后保存在本机，不会写入项目目录，也不会传给 Agent 或子进程。
-            {deepseekCredential && !deepseekCredential.encryptionAvailable
+            {qwenCredential && !qwenCredential.encryptionAvailable
               ? ' 当前系统密钥加密不可用，无法安全保存。'
               : ''}
-            {deepseekCredential?.hasApiKey ? ' 已保存的 Key 可留空后再次保存以保留。' : ''}
+            {qwenCredential?.hasApiKey ? ' 已保存的 Key 可留空后再次保存以保留。' : ''}
           </p>
           {keyMessage ? <p className="settings-hint">{keyMessage}</p> : null}
         </div>
       )}
 
-      {isCodex && login ? (
+      {isOpenAi && login ? (
         <div className="login-instructions">
           <Monitor size={17} />
           <div>

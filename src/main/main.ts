@@ -57,7 +57,7 @@ import { AssetStore } from './assetStore.js';
 import { AssetPlanStore } from './assetPlanStore.js';
 import { ApprovalBroker } from './approvalBroker.js';
 import { CodexAppServer } from './codexAppServer.js';
-import { createRuntimeHolder } from './agentProvider.js';
+import { createRuntimeHolder, isAgentProviderId } from './agentProvider.js';
 import { AgentProviderManager } from './agentProviderManager.js';
 import { ProviderCredentialStore, type SecretCipher } from './providerCredentialStore.js';
 import { EventLog } from './eventLog.js';
@@ -83,6 +83,7 @@ import {
   type HostAudioGenerationRequirement,
   type HostDeliveryValidation,
   type HostImageGenerationRequirement,
+  type ImageGenerationRoute,
 } from './gameHarness.js';
 import { imageGenerationGateFromVerification } from './imageGenerationGate.js';
 import { ImageGenerationAttestationStore } from './imageGenerationAttestation.js';
@@ -173,6 +174,10 @@ let promptTemplateStore: PromptTemplateStore;
 let imageGenerationAttestations: ImageGenerationAttestationStore;
 let providerCredentialStore: ProviderCredentialStore;
 let agentProviderManager: AgentProviderManager;
+/** Last provider start failure, surfaced in readiness instead of aborting launch. */
+let agentRuntimeFault: string | null = null;
+/** Runtimes whose status is already forwarded to the renderer. */
+const boundRuntimes = new Set<unknown>();
 let mainWindow: BrowserWindow | null = null;
 let shuttingDown = false;
 const mediaProviderTests = new Map<MediaCapability, MediaProviderTestResult>();
@@ -260,12 +265,7 @@ async function launch(): Promise<void> {
   agentProviderManager = new AgentProviderManager({
     userDataDir: userData,
     credentials: providerCredentialStore,
-    codex: runtime,
     imageApiConfigured: async () => activeMediaProvider('image') !== null,
-    buildHostTools: () => MEDIA_DYNAMIC_TOOLS,
-    executeHostTool: (name, args, context) =>
-      mediaToolBroker.executeInline(name, args, context),
-    readonlyPaths: ['AGENTS.md', '.noobi', '.codex', 'GAME_DESIGN.md'],
   });
   mcpConfigManager = new McpConfigManager(runtime);
   approvalBroker = new ApprovalBroker(runtime, (threadId) => threadRoutes.get(threadId)?.projectId ?? null);
@@ -369,6 +369,9 @@ async function createWindow(): Promise<void> {
 function bindRuntimeEvents(): void {
   runtime.on('status', (status) => {
     if (status.state !== 'ready') approvalBroker.invalidateAll();
+    // Only the active provider may drive the UI status; the idle provider's
+    // runtime must never overwrite the card the user is looking at.
+    if (agentProviderManager.activeId !== 'openai') return;
     broadcast('noobi:event:runtime', runtimeStatusForUi(status));
   });
   runtime.on('diagnostic', (message: string) => {
@@ -467,7 +470,12 @@ function bindIpc(): void {
   handle('noobi:bootstrap', async (): Promise<BootstrapPayload> => {
     const projects = await projectStore.list();
     const settings = await projectStore.getSettings();
-    await runtime.start().catch(() => runtime.status);
+    // Start the provider the user actually selected. Both providers are Codex
+    // processes, but each has its own home and credentials, so only one of them
+    // should be spawned at bootstrap.
+    if (settings.agentProvider === 'openai') {
+      await runtime.start().catch(() => runtime.status);
+    }
     const events = Object.fromEntries(
       await Promise.all(projects.map(async (project) => [project.id, await eventLog.read(project.id)] as const)),
     );
@@ -479,7 +487,7 @@ function bindIpc(): void {
       runtime: runtimeStatusForUi(activeRuntime.status),
       events,
       agentProviders: await agentProviderManager.allReadiness(),
-      providerCredentials: await providerCredentialStore.status(['codex', 'deepseek']),
+      providerCredentials: await providerCredentialStore.status(['openai', 'qwen']),
     };
   });
 
@@ -497,19 +505,40 @@ function bindIpc(): void {
   handle('noobi:runtime:logout', async () => runtimeStatusForUi(await runtimeHolder.current.logout()));
 
   handle('noobi:agent:providers', async () => agentProviderManager.allReadiness());
-  handle('noobi:agent:credentials', async () => providerCredentialStore.status(['codex', 'deepseek']));
+  handle('noobi:agent:credentials', async () => providerCredentialStore.status(['openai', 'qwen']));
   handle('noobi:agent:set-key', async (_event, provider: unknown, apiKey: unknown) => {
-    if (provider !== 'deepseek') throw new Error('只有 DeepSeek 需要 API Key');
+    if (provider !== 'qwen') throw new Error('只有 Qwen（百炼）需要 API Key');
     if (typeof apiKey !== 'string') throw new Error('API Key 格式无效');
     await providerCredentialStore.set(provider, apiKey);
     // A new key invalidates any cached runtime built with the old one.
     agentProviderManager.invalidate();
-    return providerCredentialStore.status(['codex', 'deepseek']);
+    // Persist the provider alongside its key: an install that never switched
+    // providers has no `agentProvider` field, and saving a key is an explicit
+    // statement that this engine is the one to run.
+    const saved = await projectStore.saveSettings({ agentProvider: 'qwen' });
+    // Rebuild the engine and repoint the holder, otherwise the placeholder
+    // runtime that reported "no API key" stays active until the app restarts.
+    await applyConfiguredProvider(saved.agentProvider);
+    return {
+      credentials: await providerCredentialStore.status(['openai', 'qwen']),
+      runtime: runtimeStatusForUi(runtimeHolder.current.status),
+      agentProviders: await agentProviderManager.allReadiness(),
+    };
   });
   handle('noobi:agent:select', async (_event, provider: unknown) => {
     const settings = await projectStore.getSettings();
     const patch = validateSettingsPatch({ agentProvider: provider as AppSettings['agentProvider'] });
+    // Reject an engine that cannot run before persisting the choice, so the
+    // settings file never claims a provider the app cannot honour.
+    const selected = patch.agentProvider ?? settings.agentProvider;
+    const readiness = await agentProviderManager.readiness(selected);
+    if (!readiness.ready) {
+      throw new Error(`无法启用 ${selected}：${readiness.blockers.join('；')}`);
+    }
     const saved = await projectStore.saveSettings(patch);
+    if (saved.agentProvider !== settings.agentProvider) {
+      await clearIncompatibleProjectModels();
+    }
     await applyConfiguredProvider(saved.agentProvider);
     return {
       settings: saved,
@@ -732,10 +761,31 @@ function bindIpc(): void {
           );
         }
       }
-      const status = await runtime.start();
-      if (!status.account) throw new Error('请先登录 ChatGPT，再启动游戏 Agent');
+      // Start only the provider that will actually run. Codex demands a ChatGPT
+      // login; Qwen demands a key. Checking the wrong one is what
+      // used to make every harness run unusable.
+      const activeRuntime = runtimeHolder.current;
+      const status = await activeRuntime.start();
+      if (!status.account) {
+        throw new Error(agentProviderManager.activeId === 'openai'
+          ? '请先登录 ChatGPT，再启动游戏 Agent'
+          : 'Qwen 引擎未就绪：请在设置 → 运行时与账户中填写阿里云百炼 API Key');
+      }
+      if (status.state !== 'ready') {
+        throw new Error(status.error ?? `${agentProviderManager.activeId} 运行时未就绪`);
+      }
       const settings = await projectStore.getSettings();
-      const model = input.model ?? project.model ?? settings.defaultModel ?? defaultModel(status.models);
+      // A pinned provider (Qwen) defines its model in config.toml. Forwarding a
+      // catalog name such as `gpt-5.6-sol` would override it and the upstream
+      // would reject the turn, so the pinned model always wins there.
+      const pinnedModel = agentRuntimePinnedModel();
+      const model = pinnedModel ?? resolveRunModel({
+        requested: input.model ?? project.model ?? settings.defaultModel,
+        models: status.models,
+      });
+      if (!model) {
+        throw new Error('当前引擎没有可用模型，请先在设置 → 引擎中确认运行时状态');
+      }
       const targetFrameRate = project.targetFrameRate;
       const imageProvider = activeMediaProvider('image');
       const audioProvider = activeMediaProvider('audio');
@@ -743,8 +793,16 @@ function bindIpc(): void {
         audioProvider && isMiniMaxAudioPreset(audioProvider.presetId),
       );
       const imageGenerationSkill = await resolveImageGenerationSkill();
-      if (!imageProvider && (!status.capabilities.imageGeneration || !imageGenerationSkill)) {
-        throw new Error('没有可用的图像 API，当前 Codex 运行时也没有 ImageGen 能力；请先在设置中配置图像 API 或修复 Codex ImageGen');
+      const activeProvider = agentProviderManager.activeId;
+      const providerHasBuiltInImageGen = activeProvider === 'openai'
+        && status.capabilities.imageGeneration;
+      if (!imageProvider && activeProvider === 'openai' && !providerHasBuiltInImageGen) {
+        throw new Error('没有可用的图像 API，当前 ChatGPT 登录也没有 ImageGen 能力；请先在设置中配置图像 API');
+      }
+      if (!imageProvider && !providerHasBuiltInImageGen && !imageGenerationSkill) {
+        // The harness would otherwise demand a generated image no engine can
+        // produce and fail every run at review time. State that up front.
+        throw new Error('当前引擎没有可用的图像生成能力：请在设置 → 扩展中配置图片 API，或切回 Codex App Server');
       }
       const imageGenerationRequirement = await resolveHostImageGenerationRequirement(project);
       const audioGenerationRequirement = await resolveHostAudioGenerationRequirement(
@@ -1398,30 +1456,58 @@ async function listPromptSettings(): Promise<PromptTemplateSetting[]> {
 /**
  * Point `runtimeHolder` at the runtime for the configured provider.
  *
- * Falls back to Codex when the requested provider is not usable, so a broken
- * key or a missing image API can never leave the app with no working engine.
- * The fallback is reported rather than hidden.
+ * Startup must never be fatal: the selected engine is recorded first, then a
+ * runtime is built. If it cannot run (missing key, missing Codex binary) the
+ * app still opens and the settings card names the real blocker. The active
+ * engine's own status events drive the UI, never the idle Codex instance's.
  */
 async function applyConfiguredProvider(provider: AgentProviderId): Promise<void> {
+  agentProviderManager.select(provider);
   try {
-    const active = await agentProviderManager.activate(provider);
+    const active = await agentProviderManager.runtimeOrPlaceholder(provider);
+    // A placeholder never throws; its status carries the reason instead.
+    if (active.status.state !== 'error') await active.start();
     runtimeHolder.replace(active);
+    agentRuntimeFault = active.status.error;
   } catch (error) {
-    if (provider !== 'codex') {
-      emitAgentEvent({
-        id: randomUUID(),
-        projectId: '',
-        kind: 'error',
-        title: '运行时回退',
-        message: `无法启用 ${provider}，已回退到 Codex App Server：${asError(error).message}`,
-        stage: 'brief',
-        timestamp: new Date().toISOString(),
-        method: 'provider/fallback',
-      });
-    }
+    // Keep pointing at the selected provider so the UI's readiness card explains
+    // exactly what is missing, rather than silently pretending Codex is active.
+    agentRuntimeFault = asError(error).message;
     runtimeHolder.replace(runtime);
-    throw error;
+    if (process.env.NOOBI_DEBUG === '1') {
+      process.stderr.write(`[provider] ${provider} unavailable: ${asError(error).message}\n`);
+    }
   }
+  bindActiveRuntimeStatus();
+}
+
+/**
+ * Drop project model names the newly selected engine cannot serve.
+ *
+ * Project records persist the model that built them. Keeping `gpt-5.6-sol` on a
+ * project after switching providers shows a model the engine rejects in the
+ * composer, so the field is cleared and the run falls back to the engine default.
+ */
+async function clearIncompatibleProjectModels(): Promise<void> {
+  const models = runtimeHolder.current.status.models;
+  if (models.length === 0) return;
+  const known = new Set(models.map((entry) => entry.model));
+  const projects = await projectStore.list();
+  await Promise.all(projects
+    .filter((project) => project.model && !known.has(project.model))
+    .map((project) => updateProject(project.id, { model: null }).catch(() => undefined)));
+}
+
+/** Forward the *selected* engine's status so the UI card never shows a stale one. */
+function bindActiveRuntimeStatus(): void {
+  const active = runtimeHolder.current;
+  if (active === runtime || boundRuntimes.has(active)) return;
+  boundRuntimes.add(active);
+  active.on('status', (status: RuntimeStatus) => {
+    if (active !== runtimeHolder.current) return;
+    if (status.state !== 'ready') approvalBroker.invalidateAll();
+    broadcast('noobi:event:runtime', runtimeStatusForUi(status));
+  });
 }
 
 function runtimeStatusForUi(status: RuntimeStatus): RuntimeStatus {
@@ -1508,7 +1594,7 @@ async function executeHarness(
   imageGenerationRequirement: HostImageGenerationRequirement,
   audioGenerationRequirement: HostAudioGenerationRequirement,
   targetFrameRate: ProjectRecord['targetFrameRate'],
-  imageGenerationRoute: 'configured-api' | 'codex-imagegen',
+  imageGenerationRoute: ImageGenerationRoute,
   promptAdditions: Parameters<GameHarness['run']>[0]['promptAdditions'],
 ): Promise<void> {
   try {
@@ -2357,6 +2443,7 @@ async function ensureSmokeProject(): Promise<void> {
   } else if (process.env.NOOBI_SMOKE_CREW === '1') {
     await projectStore.saveSettings({ defaultNoobiStageMode: 'crew' });
   } else if (process.env.NOOBI_SMOKE_VIEW === 'settings-noobi'
+    || process.env.NOOBI_SMOKE_VIEW === 'settings-runtime'
     || process.env.NOOBI_SMOKE_VIEW === 'workbench') {
     await projectStore.saveSettings({
       defaultNoobiStageMode: 'solo',
@@ -2525,6 +2612,55 @@ async function captureSmoke(window: BrowserWindow, target: string): Promise<void
       throw new Error(`Model picker did not open correctly: ${JSON.stringify(menu)}`);
     }
     process.stdout.write(`Noobi model picker opened ${JSON.stringify(menu)}\n`);
+  }
+  if (process.env.NOOBI_SMOKE_VIEW === 'settings-runtime') {
+    // The settings trigger lives in the workbench shell, so enter a project first.
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.project-item')?.click()`,
+      true,
+    );
+    let workbenchVisible = false;
+    for (let attempt = 0; attempt < 20 && !workbenchVisible; attempt += 1) {
+      workbenchVisible = await window.webContents.executeJavaScript(
+        `document.querySelector('.app-shell.view-workbench') instanceof HTMLElement`,
+        true,
+      ) as boolean;
+      if (!workbenchVisible) await delay(100);
+    }
+    if (!workbenchVisible) throw new Error('Workbench did not become visible');
+    const opened = await window.webContents.executeJavaScript(
+      `(() => {
+        const trigger = document.querySelector('[aria-label="打开设置"]');
+        if (!(trigger instanceof HTMLButtonElement)) return false;
+        trigger.click();
+        return true;
+      })()`,
+      true,
+    ) as boolean;
+    if (!opened) throw new Error('Settings trigger was not available');
+    await delay(350);
+    const selected = await window.webContents.executeJavaScript(
+      `(() => {
+        const trigger = Array.from(document.querySelectorAll('.settings-nav button'))
+          .find((node) => node.textContent?.includes('运行时与账户'));
+        if (!(trigger instanceof HTMLButtonElement)) return false;
+        trigger.click();
+        return true;
+      })()`,
+      true,
+    ) as boolean;
+    if (!selected) throw new Error('Runtime settings section was not available');
+    await delay(600);
+    // The provider switch is the whole point of this section: fail loudly if the
+    // cards are missing rather than capturing an empty page.
+    const providerCards = await window.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('.provider-option')).map((node) => node.textContent ?? '')`,
+      true,
+    ) as string[];
+    if (providerCards.length < 2) {
+      throw new Error(`Expected ChatGPT and Qwen provider cards, found ${providerCards.length}`);
+    }
+    process.stdout.write(`Noobi provider cards ${JSON.stringify(providerCards)}\n`);
   }
   if (process.env.NOOBI_SMOKE_VIEW === 'settings-noobi') {
     await window.webContents.executeJavaScript(
@@ -3242,8 +3378,14 @@ function validateSettingsPatch(value: Partial<AppSettings>): Partial<AppSettings
     'defaultNoobiPackId',
     'defaultNoobiCrew',
     'theme',
+    // Engine selection is a settings value; leaving it out made every provider
+    // switch fail validation before it reached the manager.
+    'agentProvider',
   ]);
   for (const key of Object.keys(value)) if (!allowed.has(key)) throw new Error(`未知设置：${key}`);
+  if (value.agentProvider !== undefined && !isAgentProviderId(value.agentProvider)) {
+    throw new Error('无效的 Agent 引擎');
+  }
   if (value.defaultNoobiStageMode !== undefined
     && !isNoobiStageMode(value.defaultNoobiStageMode)) {
     throw new Error('无效的 Noobi 舞台模式');
@@ -3261,6 +3403,31 @@ function validateSettingsPatch(value: Partial<AppSettings>): Partial<AppSettings
 
 function defaultModel(models: Array<{ model: string; isDefault: boolean }>): string | null {
   return models.find((model) => model.isDefault)?.model ?? models[0]?.model ?? null;
+}
+
+/**
+ * Pick a model the active engine actually accepts.
+ *
+ * `project.model` and `settings.defaultModel` are shared across engines, so a
+ * project built with Codex keeps `gpt-5.6-sol` after switching to DeepSeek. That
+ * name is rejected with HTTP 400, so an unknown model must fall back to the
+ * engine's own default rather than being forwarded blindly.
+ */
+/** Provider-pinned model id, or null for catalog-driven providers (OpenAI). */
+function agentRuntimePinnedModel(): string | null {
+  const active = runtimeHolder.current;
+  return active && 'pinnedModel' in active
+    ? (active as { pinnedModel: string | null }).pinnedModel
+    : null;
+}
+
+function resolveRunModel(input: {
+  requested: string | null | undefined;
+  models: Array<{ model: string; isDefault: boolean }>;
+}): string | null {
+  const wanted = input.requested?.trim();
+  if (wanted && input.models.some((entry) => entry.model === wanted)) return wanted;
+  return defaultModel(input.models);
 }
 
 function readRequestId(value: unknown): string | number | null {

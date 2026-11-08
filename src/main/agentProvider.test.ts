@@ -4,86 +4,108 @@ import {
   AGENT_PROVIDERS,
   assessProviderReadiness,
   createRuntimeHolder,
+  DEFAULT_AGENT_PROVIDER,
   describeProvider,
   isAgentProviderId,
 } from './agentProvider.js';
 import type { AgentRuntime } from './agentRuntime.js';
-import { CODEX_RUNTIME_FEATURES } from './agentRuntime.js';
+
+const ready = { state: 'ready', error: null };
 
 describe('agent provider registry', () => {
-  it('keeps Codex as the default and marks it self-contained', () => {
-    const codex = describeProvider('codex');
-    expect(codex.selfContained).toBe(true);
-    expect(codex.apiKeyEnvVar).toBeNull();
+  it('defaults to ChatGPT login', () => {
+    expect(DEFAULT_AGENT_PROVIDER).toBe('openai');
+    expect(AGENT_PROVIDERS[0]?.id).toBe('openai');
   });
 
-  it('declares that DeepSeek needs an API key and is not self-contained', () => {
-    const deepseek = describeProvider('deepseek');
-    expect(deepseek.selfContained).toBe(false);
-    expect(deepseek.apiKeyEnvVar).toBe('DEEPSEEK_API_KEY');
+  it('describes OpenAI as interactive login with built-in image generation', () => {
+    const openai = describeProvider('openai');
+    expect(openai.credentialKind).toBe('chatgpt-login');
+    expect(openai.apiKeyEnvVar).toBeNull();
+    expect(openai.builtInImageGeneration).toBe(true);
   });
 
-  it('rejects unknown provider ids', () => {
-    expect(isAgentProviderId('codex')).toBe(true);
-    expect(isAgentProviderId('deepseek')).toBe(true);
-    expect(isAgentProviderId('openai')).toBe(false);
-    expect(isAgentProviderId(null)).toBe(false);
-    expect(() => describeProvider('nope' as never)).toThrow(/Unknown agent provider/u);
+  it('describes Qwen as a single DashScope key without built-in image generation', () => {
+    const qwen = describeProvider('qwen');
+    expect(qwen.credentialKind).toBe('api-key');
+    expect(qwen.apiKeyEnvVar).toBe('DASHSCOPE_API_KEY');
+    // Qwen needs an external image service; this drives the UI warning.
+    expect(qwen.builtInImageGeneration).toBe(false);
+  });
+
+  it('rejects ids from the retired harness architecture', () => {
+    expect(isAgentProviderId('openai')).toBe(true);
+    expect(isAgentProviderId('qwen')).toBe(true);
+    expect(isAgentProviderId('codex')).toBe(false);
+    expect(isAgentProviderId('deepseek')).toBe(false);
+    expect(() => describeProvider('deepseek' as never)).toThrow(/Unknown agent provider/u);
   });
 
   it('lists every provider once', () => {
     const ids = AGENT_PROVIDERS.map((provider) => provider.id);
     expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toEqual(['openai', 'qwen']);
   });
 });
 
 describe('provider readiness', () => {
-  const ready = { state: 'ready', error: null };
-
-  it('reports Codex ready when the runtime is up', () => {
-    expect(assessProviderReadiness('codex', {
+  it('reports OpenAI ready when Codex is up', () => {
+    expect(assessProviderReadiness('openai', {
       codex: ready,
-      deepseekApiKey: null,
+      qwenApiKey: null,
       imageApiConfigured: false,
     })).toMatchObject({ ready: true, blockers: [] });
   });
 
   it('surfaces the Codex runtime error as a blocker', () => {
-    const result = assessProviderReadiness('codex', {
+    const result = assessProviderReadiness('openai', {
       codex: { state: 'error', error: 'binary missing' },
-      deepseekApiKey: null,
+      qwenApiKey: null,
       imageApiConfigured: true,
     });
     expect(result.ready).toBe(false);
     expect(result.blockers).toContain('binary missing');
   });
 
-  it('blocks DeepSeek without an API key', () => {
-    const result = assessProviderReadiness('deepseek', {
+  it('does not treat an unstarted provider as a failure', () => {
+    // `stopped` is the normal state before a provider has ever been spawned;
+    // calling it a blocker made a valid Qwen setup look broken.
+    const result = assessProviderReadiness('qwen', {
+      codex: { state: 'stopped', error: null },
+      qwenApiKey: 'sk-test',
+      imageApiConfigured: true,
+    });
+    expect(result.ready).toBe(true);
+    expect(result.blockers).toEqual([]);
+  });
+
+  it('blocks Qwen without a DashScope key', () => {
+    const result = assessProviderReadiness('qwen', {
       codex: ready,
-      deepseekApiKey: '   ',
+      qwenApiKey: '   ',
       imageApiConfigured: true,
     });
     expect(result.ready).toBe(false);
-    expect(result.blockers.join()).toMatch(/DEEPSEEK_API_KEY/u);
+    expect(result.blockers.join()).toMatch(/百炼 API Key/u);
   });
 
-  it('blocks DeepSeek without an image API, because it has no ImageGen fallback', () => {
-    const result = assessProviderReadiness('deepseek', {
+  it('warns rather than blocks Qwen when no image service is configured', () => {
+    const result = assessProviderReadiness('qwen', {
       codex: ready,
-      deepseekApiKey: 'sk-test',
+      qwenApiKey: 'sk-test',
       imageApiConfigured: false,
     });
-    expect(result.ready).toBe(false);
-    expect(result.blockers.join()).toMatch(/图片 API/u);
+    // A run that needs no new art must still be possible.
+    expect(result.ready).toBe(true);
+    expect(result.warnings.join()).toMatch(/图片服务/u);
   });
 
-  it('reports DeepSeek ready when both the key and image API exist', () => {
-    expect(assessProviderReadiness('deepseek', {
+  it('reports Qwen ready with no warnings when the key and image service exist', () => {
+    expect(assessProviderReadiness('qwen', {
       codex: ready,
-      deepseekApiKey: 'sk-test',
+      qwenApiKey: 'sk-test',
       imageApiConfigured: true,
-    })).toMatchObject({ ready: true, blockers: [] });
+    })).toMatchObject({ ready: true, blockers: [], warnings: [] });
   });
 });
 
@@ -96,14 +118,11 @@ describe('runtime holder', () => {
     } as unknown as AgentRuntime;
   }
 
-  it('forwards method calls to the currently active runtime', async () => {
-    const first = fakeRuntime('first');
-    const second = fakeRuntime('second');
-    const holder = createRuntimeHolder(first);
+  it('forwards method calls to the currently active runtime', () => {
+    const holder = createRuntimeHolder(fakeRuntime('first'));
     const switching = holder.switching();
-
     expect((switching as unknown as { name: string }).name).toBe('first');
-    holder.replace(second);
+    holder.replace(fakeRuntime('second'));
     expect((switching as unknown as { name: string }).name).toBe('second');
   });
 
@@ -121,7 +140,6 @@ describe('runtime holder', () => {
     const switching = holder.switching();
     await switching.listSkills();
     expect(called).toBe('alpha');
-
     holder.replace(make('beta'));
     await switching.listSkills();
     expect(called).toBe('beta');
@@ -134,19 +152,5 @@ describe('runtime holder', () => {
     // Documents why consumers must use `switching()`: a raw capture goes stale.
     expect((first as unknown as { name: string }).name).toBe('first');
     expect((holder.current as unknown as { name: string }).name).toBe('second');
-  });
-});
-
-describe('runtime feature expectations', () => {
-  it('records that Codex provides every capability a replacement must restore', () => {
-    // If this changes, the DeepSeek migration plan is out of date.
-    expect(CODEX_RUNTIME_FEATURES).toEqual({
-      dynamicTools: true,
-      threadResume: true,
-      builtInImageGeneration: true,
-      nativeSkills: true,
-      nativeMcp: true,
-      interactiveLogin: true,
-    });
   });
 });

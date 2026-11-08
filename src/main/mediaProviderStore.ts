@@ -10,6 +10,8 @@ export type MediaProviderAdapter =
   | 'openai-speech'
   | 'elevenlabs-sound'
   | 'minimax-audio'
+  /** Alibaba Bailian / DashScope: submit an async task, then poll for results. */
+  | 'dashscope-image'
   | 'generic-json';
 export type MediaProviderAuth = 'bearer' | 'x-api-key' | 'none';
 
@@ -86,6 +88,18 @@ export const MEDIA_PROVIDER_PRESETS: readonly MediaProviderPreset[] = [
     defaultModel: 'default',
     models: [],
     customGateway: true,
+  },
+  {
+    id: 'dashscope-image',
+    kind: 'image',
+    vendor: 'Alibaba Bailian',
+    label: 'Qwen-Image（百炼）',
+    adapter: 'dashscope-image',
+    auth: 'bearer',
+    defaultEndpoint: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis',
+    defaultModel: 'wanx2.1-t2i-turbo',
+    models: ['wanx2.1-t2i-turbo', 'wanx2.1-t2i-plus', 'wanx-v1'],
+    customGateway: false,
   },
   {
     id: 'openai-audio',

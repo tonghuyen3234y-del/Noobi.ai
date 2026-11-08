@@ -123,9 +123,9 @@ export function HomeDashboard({
     [model, models],
   );
   const accountName = accountDisplayName(runtime);
-  // The active provider decides what "ready" means: Codex needs a signed-in
-  // account, an API-key provider already reports one, but it also needs an
-  // image API because it has no built-in ImageGen fallback.
+  // The active provider decides what "ready" means. Codex needs a signed-in
+  // account; Qwen is ready as soon as its API key exists. Image
+  // generation is judged separately because it is only needed for visual work.
   const activeProvider = agentProviders.find((provider) => provider.active) ?? null;
   const usesApiKeyProvider = activeProvider ? activeProvider.requiresImageApi : false;
   const runtimeReady = runtime.state === 'ready'
@@ -135,13 +135,13 @@ export function HomeDashboard({
   const runtimeBlocker = activeProvider && !activeProvider.ready
     ? activeProvider.blockers[0] ?? '当前运行时不可用'
     : usesApiKeyProvider
-      ? '请先填写 API Key'
+      ? '请先填写百炼 API Key'
       : '请先让 Codex 运行时就绪并完成登录';
   const launchBlocker = !runtimeReady
     ? runtimeBlocker
     : !imageGenerationAvailable
       ? usesApiKeyProvider
-        ? '当前运行时不带内置图片生成，请先配置图像 API'
+        ? '当前引擎不带内置图片生成，请先配置图像 API'
         : '请先配置图像服务或修复 Codex ImageGen'
       : idea.trim() ? '创建项目并启动 Agent' : '先描述游戏创意';
 
@@ -398,7 +398,7 @@ export function HomeDashboard({
                 <span>
                   还不能开始：
                   {usesApiKeyProvider
-                    ? '当前运行时不带内置图片生成，需要配置图像 API Key。'
+                    ? '当前引擎不带内置图片生成，需要配置图像 API Key。'
                     : '需要配置图像 API Key，或修复 Codex ImageGen。'}
                 </span>
                 <button type="button" onClick={() => onOpenSettings('media')}>去配置</button>

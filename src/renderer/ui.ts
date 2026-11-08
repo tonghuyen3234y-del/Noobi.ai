@@ -26,15 +26,24 @@ export const EVENT_KIND_LABELS: Record<AgentEventKind, string> = {
   error: '异常',
 };
 
+/**
+ * Human label for the active runtime card.
+ *
+ * An API-key engine reports `type: 'api-key'` and has no email, so calling it a
+ * Codex account would be a lie; only Codex gets the login wording.
+ */
 export function runtimeLabel(runtime: RuntimeStatus): string {
+  const isApiKey = runtime.account?.type === 'api-key';
+  const name = isApiKey ? 'Qwen（百炼）' : 'Codex';
   if (runtime.state === 'ready') {
+    if (isApiKey) return `${name} 已就绪`;
     return runtime.account
       ? `${runtime.account.email ?? 'Codex 账号'} · 已就绪`
       : 'Codex 已就绪 · 未登录';
   }
-  if (runtime.state === 'starting') return 'Codex 正在启动';
-  if (runtime.state === 'error') return runtime.error ?? 'Codex 启动失败';
-  return 'Codex 尚未启动';
+  if (runtime.state === 'starting') return `${name} 正在启动`;
+  if (runtime.state === 'error') return runtime.error ?? `${name} 启动失败`;
+  return `${name} 尚未启动`;
 }
 
 export function stageProgress(stage: PipelineStage): number {

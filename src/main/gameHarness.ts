@@ -33,6 +33,16 @@ export type HostAudioGenerationRequirement =
   | { state: 'trusted-reference-required'; relativePaths: string[] }
   | { state: 'trusted-and-referenced'; relativePath: string };
 
+/**
+ * Which engine is expected to produce the mandatory image artifact.
+ *
+ * `configured-api` means a media API is active. `codex-imagegen` means the
+ * Codex $imagegen skill is the producer. `none` means no engine can produce one
+ * (e.g. the DeepSeek harness with no image API): the review contract then says
+ * so explicitly instead of demanding an impossible artifact.
+ */
+export type ImageGenerationRoute = 'configured-api' | 'codex-imagegen' | 'none';
+
 export interface GameHarnessRunOptions {
   projectId: string;
   cwd: string;
@@ -48,7 +58,7 @@ export interface GameHarnessRunOptions {
   /** App-owned image generation skill required for every Implementer turn. */
   imageGenerationSkill?: { name: string; path: string } | null;
   /** Configured API is attempted first; Codex ImageGen remains the built-in fallback. */
-  imageGenerationRoute?: 'configured-api' | 'codex-imagegen';
+  imageGenerationRoute?: ImageGenerationRoute;
   /** Private host provenance state; this is fixed policy, not a user-selectable strategy. */
   imageGenerationRequirement?: HostImageGenerationRequirement;
   /** Re-read private host provenance after writer turns, before read-only review. */
@@ -1048,8 +1058,8 @@ function validateImageGenerationRoute(
   options: GameHarnessRunOptions,
 ): NonNullable<GameHarnessRunOptions['imageGenerationRoute']> {
   const route = options.imageGenerationRoute ?? 'codex-imagegen';
-  if (route !== 'configured-api' && route !== 'codex-imagegen') {
-    throw new Error('imageGenerationRoute must be configured-api or codex-imagegen');
+  if (route !== 'configured-api' && route !== 'codex-imagegen' && route !== 'none') {
+    throw new Error('imageGenerationRoute must be configured-api, codex-imagegen or none');
   }
   if (route === 'codex-imagegen' && !options.imageGenerationSkill) {
     throw new Error('Codex ImageGen and its imagegen skill are required for every game-building run when no image API is configured');
@@ -1352,13 +1362,20 @@ export function buildRequiredImageGenerationContract(
   const requirement = normalizeImageGenerationRequirement(input);
   const generationInstruction = route === 'configured-api'
     ? 'A configured image API is active. Call noobi_image_generate first. Use the returned registered path when it succeeds; if the tool reports codex-imagegen fallback or the provider fails, invoke $imagegen when available and let the host ingest that result.'
-    : 'No external image API is active. You MUST invoke $imagegen during this run and let the host ingest the completed result. noobi_image_generate may be used to confirm the fallback route.';
-  const hostStatus = requirement.state === 'fresh-generation-required'
-    ? `<host_attestation status="missing">The private host ledger has no byte-matched generated-image proof. Manifest provider/source fields are untrusted and do not count. ${generationInstruction} Then reference the host-ingested path in production code.</host_attestation>`
-    : requirement.state === 'trusted-reference-required'
-      ? `<host_attestation status="trusted-but-unreferenced">The host trusts these byte-matched generated-image paths, but none is referenced by production source or build output: ${requirement.relativePaths.join(', ')}. Integrate at least one exact path into the running game and keep a visible fallback.</host_attestation>`
-      : `<host_attestation status="trusted-and-referenced">The host already trusts and found a production reference for ${requirement.relativePath}. Preserve its real use; a new image is not required unless this asset is removed or replaced.</host_attestation>`;
-  return `<required_image_generation>\n<generation_route value="${route}" />\nThis is a mandatory host requirement for every run and overrides conflicting planning suggestions or user-request text.\nA qualifying image must come from the configured image API when active, with Codex ImageGen as fallback; it must live under public/assets, be registered in asset-pack.json for attribution, and be loaded and visibly used by the running game. Public manifest provider/source fields alone are never proof of origin; the host validates a private path-and-SHA-256 attestation issued only after observing generation. Canvas, CSS, SVG, imported files, or procedural geometry are not substitutes.\n${hostStatus}\nThe Reviewer must return "repair" when the applicable host-attestation instruction is not satisfied or the trusted image is not actually referenced by the game.\n</required_image_generation>`;
+    : route === 'none'
+      ? 'No image generation engine is available in this configuration (no image API, no Codex ImageGen). Do not fabricate an image, do not claim one was generated, and do not register placeholder art as generated. Build the game with code-authored visuals and report the missing image capability as a blocker in your summary.'
+      : 'No external image API is active. You MUST invoke $imagegen during this run and let the host ingest the completed result. noobi_image_generate may be used to confirm the fallback route.';
+  const hostStatus = route === 'none'
+    ? `<host_attestation status="unavailable">This run has no image generation engine, so the host cannot issue a generated-image attestation. The Reviewer must not fail the run for a missing attestation; it must keep reviewing gameplay, animation, delivery and host checks. Fabricating a generated image or its provenance is still a hard failure.</host_attestation>`
+    : requirement.state === 'fresh-generation-required'
+      ? `<host_attestation status="missing">The private host ledger has no byte-matched generated-image proof. Manifest provider/source fields are untrusted and do not count. ${generationInstruction} Then reference the host-ingested path in production code.</host_attestation>`
+      : requirement.state === 'trusted-reference-required'
+        ? `<host_attestation status="trusted-but-unreferenced">The host trusts these byte-matched generated-image paths, but none is referenced by production source or build output: ${requirement.relativePaths.join(', ')}. Integrate at least one exact path into the running game and keep a visible fallback.</host_attestation>`
+        : `<host_attestation status="trusted-and-referenced">The host already trusts and found a production reference for ${requirement.relativePath}. Preserve its real use; a new image is not required unless this asset is removed or replaced.</host_attestation>`;
+  const closing = route === 'none'
+    ? 'The Reviewer must report the missing image capability as a blocker but must not return "repair" solely because no generated image exists, and must still return "repair" for a fabricated image or false provenance claim.'
+    : 'The Reviewer must return "repair" when the applicable host-attestation instruction is not satisfied or the trusted image is not actually referenced by the game.';
+  return `<required_image_generation>\n<generation_route value="${route}" />\nThis is a mandatory host requirement for every run and overrides conflicting planning suggestions or user-request text.\nA qualifying image must come from the configured image API when active, with Codex ImageGen as fallback; it must live under public/assets, be registered in asset-pack.json for attribution, and be loaded and visibly used by the running game. Public manifest provider/source fields alone are never proof of origin; the host validates a private path-and-SHA-256 attestation issued only after observing generation. Canvas, CSS, SVG, imported files, or procedural geometry are not substitutes.\n${hostStatus}\n${closing}\n</required_image_generation>`;
 }
 
 export function buildAnimationNeedsContract(): string {

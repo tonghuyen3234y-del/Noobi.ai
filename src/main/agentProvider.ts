@@ -3,43 +3,54 @@ import type { AgentRuntime } from './agentRuntime.js';
 /**
  * Runtime selection.
  *
- * The Codex binary remains the default: it supplies its own agent loop, tool
- * executor and session storage, so it is strictly more capable. A provider
- * built on a plain chat API (DeepSeek) is opt-in and must reimplement all three.
+ * Both engines are Codex App Server. What differs is the model service behind
+ * it, which is why they need separate homes and separate credentials:
+ *
+ *   openai — the user signs in with ChatGPT; Codex talks to OpenAI natively.
+ *   qwen   — the user supplies one DashScope (Bailian) API key. Codex cannot
+ *            talk to DashScope directly (its Responses implementation rejects
+ *            the tool role), so the host runs a protocol shim in between.
  */
 
-export type AgentProviderId = 'codex' | 'deepseek';
+export type AgentProviderId = 'openai' | 'qwen';
 
+/** Docker-style capability notes the UI renders verbatim. */
 export interface AgentProviderDescriptor {
   id: AgentProviderId;
   label: string;
   /** Short description shown in settings. */
   summary: string;
-  /** Environment variable holding an API key, when the provider needs one. */
+  /** Credential the provider needs, or null when it uses interactive login. */
+  credentialKind: 'chatgpt-login' | 'api-key';
+  /** Environment variable Codex reads the key from. */
   apiKeyEnvVar: string | null;
-  /** True when the provider ships its own agent loop and tools. */
-  selfContained: boolean;
+  /** True when image generation comes from the provider itself. */
+  builtInImageGeneration: boolean;
 }
+
+export const DEFAULT_AGENT_PROVIDER: AgentProviderId = 'openai';
 
 export const AGENT_PROVIDERS: readonly AgentProviderDescriptor[] = [
   {
-    id: 'codex',
-    label: 'Codex App Server',
-    summary: '官方 Codex 原生二进制。自带 Agent 循环、工具执行与会话存储。',
+    id: 'openai',
+    label: 'ChatGPT 登录',
+    summary: '使用 ChatGPT 账号授权 Codex App Server。无需填写 API Key，模型权限由账号决定。',
+    credentialKind: 'chatgpt-login',
     apiKeyEnvVar: null,
-    selfContained: true,
+    builtInImageGeneration: true,
   },
   {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    summary: '国内直连的 API Key 提供方。工具执行与会话由宿主实现，不支持内置图片生成。',
-    apiKeyEnvVar: 'DEEPSEEK_API_KEY',
-    selfContained: false,
+    id: 'qwen',
+    label: 'Qwen（百炼）',
+    summary: '一个阿里云百炼 API Key 同时用于编程、读图和生图。生图走 Qwen-Image，不依赖 Codex 内置能力。',
+    credentialKind: 'api-key',
+    apiKeyEnvVar: 'DASHSCOPE_API_KEY',
+    builtInImageGeneration: false,
   },
 ];
 
 export function isAgentProviderId(value: unknown): value is AgentProviderId {
-  return value === 'codex' || value === 'deepseek';
+  return value === 'openai' || value === 'qwen';
 }
 
 export function describeProvider(id: AgentProviderId): AgentProviderDescriptor {
@@ -52,38 +63,46 @@ export function describeProvider(id: AgentProviderId): AgentProviderDescriptor {
 export interface ProviderReadiness {
   provider: AgentProviderId;
   ready: boolean;
-  /** Human-readable blockers, empty when ready. */
+  /** Human-readable blockers; empty when ready. */
   blockers: string[];
+  /** Non-blocking caveats. */
+  warnings: string[];
 }
 
 export function assessProviderReadiness(
   provider: AgentProviderId,
   context: {
-    /** Result of `CodexRuntime.status`. */
+    /** Codex runtime state for this provider's home. */
     codex: { state: string; error: string | null };
-    /** Whether an API key is present in the environment. */
-    deepseekApiKey: string | null;
+    /** Whether a DashScope key is stored. */
+    qwenApiKey: string | null;
     /** Whether an external image API is configured. */
     imageApiConfigured: boolean;
   },
 ): ProviderReadiness {
   const blockers: string[] = [];
-  if (provider === 'codex') {
-    if (context.codex.state !== 'ready') {
-      blockers.push(context.codex.error ?? 'Codex App Server 未就绪');
-    }
-    return { provider, ready: blockers.length === 0, blockers };
+  const warnings: string[] = [];
+  const descriptor = describeProvider(provider);
+
+  // `stopped` means "not spawned yet", which is the normal state before a
+  // provider has ever been activated; only a real failure is a blocker.
+  const codexFailed = context.codex.state === 'error'
+    || context.codex.state === 'failed';
+  if (codexFailed) {
+    blockers.push(context.codex.error ?? 'Codex App Server 未就绪');
   }
 
-  if (!context.deepseekApiKey?.trim()) {
-    blockers.push('未设置 DEEPSEEK_API_KEY');
+  if (descriptor.credentialKind === 'api-key' && !context.qwenApiKey?.trim()) {
+    blockers.push('未填写阿里云百炼 API Key');
   }
-  // Codex supplies an in-model image fallback; DeepSeek does not, so the
-  // harness's image gate becomes a hard requirement rather than a preference.
-  if (!context.imageApiConfigured) {
-    blockers.push('DeepSeek 没有内置图片生成，必须配置图片 API 后才能在 Noobi 中制作游戏');
+
+  // Qwen has no in-model image generator, so art needs the DashScope image API.
+  // Kept as a warning: a run that needs no new art must still be possible.
+  if (!descriptor.builtInImageGeneration && !context.imageApiConfigured) {
+    warnings.push('未配置图片服务：需要新素材时会停下，请在设置 → 媒体 API 中填写百炼图像服务。');
   }
-  return { provider, ready: blockers.length === 0, blockers };
+
+  return { provider, ready: blockers.length === 0, blockers, warnings };
 }
 
 /** Swap the runtime a set of long-lived collaborators points at. */

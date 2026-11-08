@@ -77,6 +77,16 @@ export class ProviderCredentialStore {
    * The caller must not retain the result beyond the operation that needs it.
    */
   async reveal(provider: AgentProviderId): Promise<string | null> {
+    const stored = await this.#revealStored(provider);
+    if (stored) return stored;
+    // A key exported in the shell environment is a first-class source, so a
+    // headless or freshly-installed app can run without opening settings first.
+    const fromEnv = process.env.DASHSCOPE_API_KEY?.trim();
+    return provider === 'qwen' && fromEnv ? fromEnv : null;
+  }
+
+  /** Stored ciphertext only; never consults the environment. */
+  async #revealStored(provider: AgentProviderId): Promise<string | null> {
     const file = await this.#load();
     const sealed = file.keys[provider];
     if (!sealed) return null;
@@ -94,7 +104,8 @@ export class ProviderCredentialStore {
 
   async has(provider: AgentProviderId): Promise<boolean> {
     const file = await this.#load();
-    return Boolean(file.keys[provider]);
+    if (file.keys[provider]) return true;
+    return provider === 'qwen' && Boolean(process.env.DASHSCOPE_API_KEY?.trim());
   }
 
   async #load(): Promise<CredentialFile> {
@@ -111,7 +122,7 @@ export class ProviderCredentialStore {
         return this.#loaded;
       }
       const keys: Partial<Record<AgentProviderId, string>> = {};
-      for (const provider of ['codex', 'deepseek'] as const) {
+      for (const provider of ['openai', 'qwen'] as const) {
         const value = parsed.keys[provider];
         if (typeof value === 'string' && value.startsWith(PREFIX)) keys[provider] = value;
       }
