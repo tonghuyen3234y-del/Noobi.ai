@@ -94,7 +94,22 @@ export class AgentProviderManager {
    * together with its real blocker, instead of silently falling back.
    */
   async runtimeOrPlaceholder(provider: AgentProviderId): Promise<CodexAppServer> {
-    return this.runtimeFor(provider);
+    try {
+      return await this.runtimeFor(provider);
+    } catch (error) {
+      // Qwen without a key still needs a runtime object so the settings card can
+      // render the selected provider and name the blocker. Returning the OpenAI
+      // runtime instead made the Qwen card display ChatGPT's status.
+      if (provider !== 'qwen') throw error;
+      const placeholder = new CodexAppServer({
+        codexHome: this.codexHomeFor(provider),
+      });
+      placeholder.markUnavailable(asMessageOf(error));
+      // Deliberately not cached: a placeholder is a view of "cannot start yet",
+      // and caching it would make readiness report the key blocker twice and
+      // keep the stale failure after a key is saved.
+      return placeholder;
+    }
   }
 
   async readiness(provider: AgentProviderId): Promise<AgentProviderStatus> {
@@ -152,11 +167,9 @@ export class AgentProviderManager {
     if (!existing) {
       // Report blockers that do not need the binary: a missing key is a
       // definite blocker, so surface it before paying for a spawn.
-      const descriptor = AGENT_PROVIDERS.find((entry) => entry.id === provider);
-      if (descriptor?.credentialKind === 'api-key') {
-        const key = await this.#context.credentials.reveal('qwen').catch(() => null);
-        if (!key?.trim()) return { state: 'stopped', error: '未填写阿里云百炼 API Key' };
-      }
+      // A missing key is reported by the credential check in
+      // `assessProviderReadiness`; repeating it here produced two identical
+      // blocker lines in the settings card.
       return { state: 'stopped', error: null };
     }
     const status = existing.status;
@@ -186,4 +199,8 @@ export class AgentProviderManager {
       wireApi: 'responses',
     };
   }
+}
+
+function asMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

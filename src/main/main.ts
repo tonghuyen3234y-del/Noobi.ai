@@ -528,13 +528,10 @@ function bindIpc(): void {
   handle('noobi:agent:select', async (_event, provider: unknown) => {
     const settings = await projectStore.getSettings();
     const patch = validateSettingsPatch({ agentProvider: provider as AppSettings['agentProvider'] });
-    // Reject an engine that cannot run before persisting the choice, so the
-    // settings file never claims a provider the app cannot honour.
-    const selected = patch.agentProvider ?? settings.agentProvider;
-    const readiness = await agentProviderManager.readiness(selected);
-    if (!readiness.ready) {
-      throw new Error(`无法启用 ${selected}：${readiness.blockers.join('；')}`);
-    }
+    // Record the user's choice even when the provider is not usable yet.
+    // Refusing here deadlocked the settings UI: the API-key field only appears
+    // once Qwen is selected, but selecting Qwen required a key. Readiness is
+    // surfaced as a card blocker and enforced when a run actually starts.
     const saved = await projectStore.saveSettings(patch);
     if (saved.agentProvider !== settings.agentProvider) {
       await clearIncompatibleProjectModels();
@@ -2659,6 +2656,34 @@ async function captureSmoke(window: BrowserWindow, target: string): Promise<void
     ) as string[];
     if (providerCards.length < 2) {
       throw new Error(`Expected ChatGPT and Qwen provider cards, found ${providerCards.length}`);
+    }
+    if (process.env.NOOBI_SMOKE_CLICK_QWEN === '1') {
+      // Regression probe: selecting Qwen with no key must still mark the card
+      // active and render the key field, not silently refuse.
+      const clicked = await window.webContents.executeJavaScript(
+        `(() => {
+          const card = Array.from(document.querySelectorAll('.provider-option'))
+            .find((node) => node.textContent?.includes('Qwen'));
+          if (!(card instanceof HTMLButtonElement)) return 'missing';
+          card.click();
+          return 'clicked';
+        })()`,
+        true,
+      ) as string;
+      await delay(2_500);
+      const state = await window.webContents.executeJavaScript(
+        `(() => {
+          const active = document.querySelector('.provider-option.active');
+          const keyInput = document.querySelector('input[type="password"]');
+          const blockers = Array.from(document.querySelectorAll('.provider-blockers li')).map((n) => n.textContent);
+          return { active: active?.textContent ?? null, hasKeyField: Boolean(keyInput), blockers };
+        })()`,
+        true,
+      ) as { active: string | null; hasKeyField: boolean; blockers: string[] };
+      process.stdout.write(`Noobi qwen click ${clicked} ${JSON.stringify(state)}\n`);
+      if (clicked !== 'clicked') throw new Error('Qwen card was not clickable');
+      if (!state.active?.includes('Qwen')) throw new Error('Clicking Qwen did not select it');
+      if (!state.hasKeyField) throw new Error('Selecting Qwen did not reveal the API key field');
     }
     process.stdout.write(`Noobi provider cards ${JSON.stringify(providerCards)}\n`);
   }

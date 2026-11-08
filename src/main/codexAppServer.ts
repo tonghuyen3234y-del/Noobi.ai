@@ -181,6 +181,22 @@ export class CodexAppServer extends EventEmitter implements AgentRuntime {
   }
 
   /**
+   * Report the runtime as unavailable without spawning Codex.
+   *
+   * Used when a provider is selected but cannot run yet (missing key): the
+   * settings card needs a runtime whose status carries the real reason, rather
+   * than a substitute runtime reporting another provider's health.
+   */
+  markUnavailable(reason: string): void {
+    this.#runtime = {
+      ...emptyRuntimeStatus(),
+      state: 'error',
+      error: reason,
+    };
+    this.emit('status', this.status);
+  }
+
+  /**
    * The model this provider is pinned to, when it is not OpenAI.
    *
    * A configured provider defines its own model in `config.toml`. Passing any

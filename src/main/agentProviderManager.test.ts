@@ -78,6 +78,23 @@ describe('AgentProviderManager', () => {
     expect(runtime.pinnedModel).toBeNull();
   });
 
+  it('returns a placeholder runtime for Qwen without a key, never the OpenAI one', async () => {
+    const mgr = manager({ imageApi: true });
+    // Returning the OpenAI runtime made the Qwen card display ChatGPT's status.
+    const runtime = await mgr.runtimeOrPlaceholder('qwen');
+    expect(runtime).toBeTruthy();
+    // The choice must stay selectable so the key field can appear at all;
+    // gating selection on readiness deadlocked the settings UI.
+    mgr.select('qwen');
+    expect(mgr.activeId).toBe('qwen');
+  });
+
+  it('reports the missing key exactly once', async () => {
+    const blockers = (await manager().readiness('qwen')).blockers;
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatch(/百炼 API Key/u);
+  });
+
   it('lists readiness for both providers', async () => {
     const all = await manager().allReadiness();
     expect(all.map((entry) => entry.id)).toEqual(['openai', 'qwen']);
