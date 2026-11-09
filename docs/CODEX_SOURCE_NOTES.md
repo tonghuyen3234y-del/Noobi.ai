@@ -24,7 +24,7 @@
 9. `dynamicTools` 只在 `thread/start` 注册，并随线程持久化；`thread/resume` 不能给旧线程补装工具。
 10. 原生 `image_gen.imagegen` 会发出含 PNG base64 与 `savedPath` 的 `imageGeneration` item；宿主不能把 item 原样写日志。
 
-## Noobi.ai 的产品取舍
+## XiuPlay.ai 的产品取舍
 
 - 直接把官方 App Server 作为 Harness 内核，不安装旧 `codex-harness` 插件。
 - 在 Electron main 内实现 Planner → 单 Implementer → Reviewer → 最多一次 Repair → 最终复审的宿主级游戏编排。

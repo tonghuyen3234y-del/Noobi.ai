@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/images/noobi-app-icon.png" width="112" alt="Noobi.ai 应用图标">
+  <img src="docs/images/xiuplay-app-icon.png" width="112" alt="XiuPlay.ai 应用图标">
 </p>
 
-<h1 align="center">Noobi.ai</h1>
+<h1 align="center">XiuPlay.ai</h1>
 
 <p align="center">
   <strong>把一句游戏创意，变成经过审查、可以游玩的 Web 或 Godot 游戏。</strong><br>
@@ -24,9 +24,9 @@
   <a href="README.md"><strong>English</strong></a>
 </p>
 
-![Noobi.ai 制作工作台，包含 Agent 管线、可玩预览、素材与工程文件](docs/images/noobi-workbench.png)
+![XiuPlay.ai 首页：淡紫像素云海背景、创意输入区与项目侧栏](docs/images/xiuplay-home-hero.png)
 
-Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是把 Codex 放进一条有边界的游戏制作循环：只读 Planner 拆解任务，Implementer 在独立工程目录中实现，独立 Reviewer 检查真实结果，宿主再正式构建并自动试玩。审查、构建或体验评测未通过时，会交回同一个 Implementer，最多连续修复三轮。
+XiuPlay.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是把 Codex 放进一条有边界的游戏制作循环：只读 Planner 拆解任务，Implementer 在独立工程目录中实现，独立 Reviewer 检查真实结果，宿主再正式构建并自动试玩。审查、构建或体验评测未通过时，会交回同一个 Implementer，最多连续修复三轮。
 
 > **当前状态：** 本分支的桌面应用名为 **XiuPlay.ai**，提供 [macOS Apple 芯片预览安装包](https://github.com/tonghuyen3234y-del/Noobi.ai/releases/tag/v0.1.0-preview.20261109)，也可从源码运行。安装包尚未签名、公证；生成结果是独立的本地 Web 或 Godot 4 游戏工程。
 
@@ -40,7 +40,7 @@ Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是�
 
 本分支基于 [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.ai) 进行迭代。
 
-## 为什么选择 Noobi.ai
+## 为什么选择 XiuPlay.ai
 
 | | 你会得到什么 |
 | --- | --- |
@@ -48,7 +48,7 @@ Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是�
 | **经过审查的制作循环** | Planner → Implementer → Reviewer → 正式构建 → 自动试玩；失败后最多进行三轮有界修复。 |
 | **自动体验评测** | 隔离的隐藏浏览器会操作主要玩法、记录截图，检查可见画面、动画连续性和运行错误。 |
 | **真实多媒体管线** | 图片、音乐、语音、音效和 3D 可走配置的 Provider、Codex ImageGen、导入素材或程序化回退；失败素材仍以可重试占位留在素材页。 |
-| **工程归用户所有** | 每个游戏都是普通本地项目，可以检查文件、继续用 Codex 修改、提交 Git，或完全脱离 Noobi.ai 使用。 |
+| **工程归用户所有** | 每个游戏都是普通本地项目，可以检查文件、继续用 Codex 修改、提交 Git，或完全脱离 XiuPlay.ai 使用。 |
 | **为扩展而设计** | 可增加媒体 Provider、Codex Skills、MCP Server、角色提示词、工程模板、Godot 导出目标或全新的工作台 UI。 |
 
 ## 快速开始
@@ -63,12 +63,19 @@ Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是�
 
 ```bash
 git clone https://github.com/tonghuyen3234y-del/Noobi.ai.git
-cd Noobi.ai
+cd XiuPlay.ai
 npm ci
 npm run dev
 ```
 
-首次启动后，在设置中选择 ChatGPT 登录或 Qwen（百炼）路线，并完成对应登录或 Key 配置。文本模型与图片生成服务需分别配置。应用为两条路线使用独立的私有 Codex 目录，不会覆盖全局 `~/.codex` 配置。
+首次启动后，在 **设置 → 运行时与账户** 中选择一条路线：
+
+- **ChatGPT 登录** — 授权一次即可。Codex 使用账号有权限的 OpenAI 模型，图片生成走内置 ImageGen。
+- **Qwen（百炼）** — 填入一个 DashScope API Key。策划、代码与截图理解使用 `qwen-plus`；保存该 Key 时会用同一个 Key 自动配置 Qwen-Image 生图服务，不需要第二个凭据。
+
+Qwen 路线有一个关键点：Codex 只接受 Responses 协议，而百炼的 `/responses` 端点会把 `function_call_output` 改写成它自己随后拒绝的 `tool` 角色，导致每个后续回合都返回 HTTP 400。应用在中间运行一个本地协议转换层来让这条路线可用。
+
+两条路线各自使用独立的私有 Codex 目录（`codex-home-openai`、`codex-home-qwen`），凭据、线程与会话状态互不混用。切换路线不会影响已有项目、代码与素材，也不会覆盖全局 `~/.codex` 配置。
 
 如果应用无法自动找到 Codex，可显式指定二进制：
 
@@ -97,11 +104,17 @@ flowchart LR
 
 工作台用 `Brief → Scaffold → GDD → Assets → World → Code → Verify → Complete` 展示制作进度；真正的完成条件由 Reviewer 与宿主证明门禁共同决定。
 
-![Noobi.ai 鸭嘴兽吉祥物编排代码、动画、3D、音频与可玩世界](docs/images/noobi-game-agent-poster.png)
+<p align="center">
+  <img src="docs/images/xiuplay-mascot.png" width="220" alt="XiuPlay.ai 霓虹闪电兔吉祥物">
+</p>
+
+<p align="center">
+  <sub>XiuPlay.ai 的吉祥物是一只霓虹闪电兔，会出现在侧栏、工作台与生成的加载画面中。</sub>
+</p>
 
 ## Fork 并定制
 
-Noobi.ai 把关键能力放在可替换的边界上，一个有价值的 Fork 可以从很小的改动开始：
+XiuPlay.ai 把关键能力放在可替换的边界上，一个有价值的 Fork 可以从很小的改动开始：
 
 | 目标 | 从这里开始 |
 | --- | --- |

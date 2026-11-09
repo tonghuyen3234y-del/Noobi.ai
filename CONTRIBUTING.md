@@ -1,6 +1,6 @@
-# Contributing to Noobi.ai
+# Contributing to XiuPlay.ai
 
-Thanks for helping make Noobi.ai safer, more portable and easier to extend. Focused pull requests are the easiest to review and merge.
+Thanks for helping make XiuPlay.ai safer, more portable and easier to extend. Focused pull requests are the easiest to review and merge.
 
 ## Good places to contribute
 
@@ -18,8 +18,8 @@ For larger features or behavior changes, open a proposal issue before investing 
 You need macOS, Node.js 22 LTS, npm, and a ChatGPT/Codex account for real Agent smoke tests.
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/Noobi.ai.git
-cd Noobi.ai
+git clone https://github.com/YOUR-USERNAME/XiuPlay.ai.git
+cd XiuPlay.ai
 npm ci
 npm run dev
 ```

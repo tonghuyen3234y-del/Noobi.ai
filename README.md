@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/images/noobi-app-icon.png" width="112" alt="Noobi.ai app icon">
+  <img src="docs/images/xiuplay-app-icon.png" width="112" alt="XiuPlay.ai app icon">
 </p>
 
-<h1 align="center">Noobi.ai</h1>
+<h1 align="center">XiuPlay.ai</h1>
 
 <p align="center">
   <strong>Turn one game idea into a reviewed, playable Web or Godot game.</strong><br>
@@ -24,14 +24,16 @@
   <a href="README.zh-CN.md"><strong>简体中文</strong></a>
 </p>
 
-![Noobi.ai production workbench showing the agent pipeline, playable preview, assets and project files](docs/images/noobi-workbench.png)
+![XiuPlay.ai home screen with the lavender pixel-cloud hero, idea composer and project rail](docs/images/xiuplay-home-hero.png)
 
-Noobi.ai gives Codex a bounded game-production loop instead of asking one agent to improvise everything in a single pass. A read-only Planner scopes the work, an Implementer builds inside an isolated project directory, an independent Reviewer checks the result, and the host builds and plays the production output before completion. Failed review, build or playtest checks return to the same Implementer for up to three repair rounds.
+XiuPlay.ai gives Codex a bounded game-production loop instead of asking one agent to improvise everything in a single pass. A read-only Planner scopes the work, an Implementer builds inside an isolated project directory, an independent Reviewer checks the result, and the host builds and plays the production output before completion. Failed review, build or playtest checks return to the same Implementer for up to three repair rounds.
 
 > **Current status:** this fork ships the desktop app as **XiuPlay.ai**. Download the [macOS Apple silicon preview](https://github.com/tonghuyen3234y-del/Noobi.ai/releases/tag/v0.1.0-preview.20261109) or run from source. The preview is unsigned and not notarized. Generated games remain standalone local Web or Godot 4 projects.
 
 ## Preview update — 2026-11-09
 
+- Renamed the desktop app to **XiuPlay.ai**: new wordmark, squircle app icon and the neon lightning-rabbit mascot. Internal identifiers (`.noobi/` workspace paths, `noobi_*` tool names) are unchanged so existing projects keep working.
+- Narrow windows were blank below 800px: the rail is a fixed overlay there and never reserved layout width, pushing the page off screen at the 760px minimum. Content now has its own axis.
 - Lavender pixel-cloud home background with pointer particles, digital fragments, soft purple trails and star interactions; mobile retains the static background.
 - ChatGPT login and Bailian Key routes, with Qwen patch-tool registration, tool-result round trips and protocol conversion.
 - Planner role boundaries, bounded provider retries, repair progress checks and refreshed post-repair review evidence.
@@ -40,7 +42,7 @@ Noobi.ai gives Codex a bounded game-production loop instead of asking one agent 
 
 This fork builds on [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.ai).
 
-## Why Noobi.ai
+## Why XiuPlay.ai
 
 | | What you get |
 | --- | --- |
@@ -48,7 +50,7 @@ This fork builds on [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.
 | **Review-gated production loop** | Planner → Implementer → Reviewer → formal build → automated playtest. Failed checks trigger up to three bounded repair rounds. |
 | **Automatic experience evaluation** | A sandboxed hidden browser exercises core controls, captures evidence, and checks visible gameplay, animation continuity and runtime errors. |
 | **Real media pipeline** | Route images, music, speech, sound effects and 3D through configured providers, Codex ImageGen, imported assets or procedural fallbacks. Failed assets remain visible as retryable placeholders. |
-| **A workspace you own** | Every game is a normal local project. Inspect the files, continue with Codex, commit it to Git, or take it outside Noobi.ai. |
+| **A workspace you own** | Every game is a normal local project. Inspect the files, continue with Codex, commit it to Git, or take it outside XiuPlay.ai. |
 | **Built to extend** | Add media providers, Codex Skills, MCP servers, agent prompts, project templates, Godot export targets, or an entirely different workbench UI. |
 
 ## Quick start
@@ -63,14 +65,21 @@ This fork builds on [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.
 
 ```bash
 git clone https://github.com/tonghuyen3234y-del/Noobi.ai.git
-cd Noobi.ai
+cd XiuPlay.ai
 npm ci
 npm run dev
 ```
 
-On first launch, choose ChatGPT login or Qwen (Bailian) in Settings and configure that route. Text models and image generation are configured separately. Each route uses its own app-private Codex directory; your global `~/.codex` configuration is not overwritten.
+On first launch, pick one route in **Settings → Runtime & account**:
 
-If Codex cannot be located automatically, point Noobi.ai at a binary explicitly:
+- **ChatGPT login** — authorize once; Codex uses whatever OpenAI models the account can reach, and image generation comes from its built-in ImageGen.
+- **Qwen (Bailian)** — paste one DashScope API Key. Planning, code and screenshot review use `qwen-plus`; saving the key also provisions the Qwen-Image service from the same key, so art works without a second credential.
+
+A key point on the Qwen route: Codex only speaks the Responses protocol, and DashScope's `/responses` endpoint rewrites `function_call_output` into a `tool` role it then rejects, so every follow-up turn failed with HTTP 400. The app runs a local protocol shim in between to make that route usable.
+
+Each route keeps its own app-private Codex directory (`codex-home-openai`, `codex-home-qwen`), so credentials, threads and session state never mix. Switching routes leaves your projects, code and assets untouched. Your global `~/.codex` configuration is not overwritten.
+
+If Codex cannot be located automatically, point XiuPlay.ai at a binary explicitly:
 
 ```bash
 NOOBI_CODEX_BIN=/absolute/path/to/codex npm run dev
@@ -97,11 +106,17 @@ flowchart LR
 
 The workbench visualizes `Brief → Scaffold → GDD → Assets → World → Code → Verify → Complete`. Those stages explain progress; the Reviewer and host proof gate decide whether a run is actually complete.
 
-![Noobi.ai mascot orchestrating code, animation, 3D, audio and playable worlds](docs/images/noobi-game-agent-poster.png)
+<p align="center">
+  <img src="docs/images/xiuplay-mascot.png" width="220" alt="XiuPlay.ai neon lightning rabbit mascot">
+</p>
+
+<p align="center">
+  <sub>The XiuPlay.ai mascot — a neon lightning rabbit — appears across the rail, the workbench and the generated loading screens.</sub>
+</p>
 
 ## Fork and customize
 
-Noobi.ai is intentionally organized around replaceable boundaries. A useful fork can start small:
+XiuPlay.ai is intentionally organized around replaceable boundaries. A useful fork can start small:
 
 | Goal | Start here |
 | --- | --- |
@@ -123,7 +138,7 @@ Good first directions include a new provider adapter, Windows/Linux packaging, s
 - playable loopback preview, project files, and a unified asset library
 - Agent-selected Web or Godot 4 workspace with environment and export-template checks
 - host-managed timing and animation contracts without a user-facing FPS strategy selector
-- Noobi crew characters, role-based motion, selectable studio scenes and an animated fishing background
+- XiuPlay crew characters, role-based motion, selectable studio scenes and an animated fishing background
 - persistent projects and resumable Codex Implementer threads
 
 ### Media and extension layer

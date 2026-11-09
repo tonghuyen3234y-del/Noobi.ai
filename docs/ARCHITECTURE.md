@@ -1,4 +1,4 @@
-# Noobi.ai 架构
+# XiuPlay.ai 架构
 
 ## 核心选择
 
@@ -12,7 +12,7 @@
 
 ## 为什么使用 App Server
 
-App Server 是 Codex 为富客户端提供的正式深度集成面，覆盖认证、会话历史、审批和流式 Agent 事件。Noobi.ai 是交互式桌面产品，因此使用 App Server，而不是面向 CI/自动作业的 SDK。
+App Server 是 Codex 为富客户端提供的正式深度集成面，覆盖认证、会话历史、审批和流式 Agent 事件。XiuPlay.ai 是交互式桌面产品，因此使用 App Server，而不是面向 CI/自动作业的 SDK。
 
 ## 进程边界
 
