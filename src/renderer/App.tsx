@@ -33,6 +33,7 @@ import { Composer } from './components/Composer';
 import { DeleteProjectModal } from './components/DeleteProjectModal';
 import { EventStream } from './components/EventStream';
 import { HomeDashboard, type HomeLaunchInput } from './components/HomeDashboard';
+import { HomePixelAtmosphere } from './components/HomePixelAtmosphere';
 import { Inspector } from './components/Inspector';
 import { LaunchTransition, type LaunchTransitionPhase } from './components/LaunchTransition';
 import { Pipeline } from './components/Pipeline';
@@ -111,6 +112,13 @@ export function App() {
   const imageGenerationAvailable = Boolean(
     runtime?.capabilities.imageGeneration || runtime?.capabilities.externalImageGeneration,
   );
+  // An API-key engine (Qwen) reports no account object, so `runtime.account`
+  // alone marked it permanently not ready and disabled the composer.
+  const activeAgentProvider = agentProviders.find((provider) => provider.active) ?? null;
+  const agentUsesApiKey = activeAgentProvider ? activeAgentProvider.requiresImageApi : false;
+  const agentCredentialsReady = agentUsesApiKey
+    ? Boolean(activeAgentProvider?.ready)
+    : Boolean(runtime?.account);
 
   const loadBootstrap = useCallback(async () => {
     setLoadingError('');
@@ -255,7 +263,7 @@ export function App() {
   function ensureRunReady(): boolean {
     setError('');
     if (!runtime) {
-      setError('Noobi.ai 正在读取 Agent 运行时，请稍后再试。');
+      setError('XiuPlay.ai 正在读取 Agent 运行时，请稍后再试。');
       return false;
     }
     if (runtime.state !== 'ready') {
@@ -263,8 +271,15 @@ export function App() {
       openSettings();
       return false;
     }
-    if (!runtime.account) {
-      setError('当前引擎还没有可用凭据：Qwen 需要百炼 API Key，ChatGPT 登录则需要完成授权。');
+    // An API-key engine reports no account: its credential is the key that
+    // readiness already validated. Demanding `runtime.account` rejected Qwen
+    // runs that the backend had confirmed as ready.
+    const activeProvider = agentProviders.find((provider) => provider.active) ?? null;
+    const usesApiKeyProvider = activeProvider ? activeProvider.requiresImageApi : false;
+    if (usesApiKeyProvider ? !activeProvider?.ready : !runtime.account) {
+      setError(usesApiKeyProvider
+        ? '还没有可用的百炼 API Key，请先在设置 → 运行时与账户中填写。'
+        : '当前引擎还没有可用凭据：请先完成 ChatGPT 登录。');
       openSettings();
       return false;
     }
@@ -460,7 +475,7 @@ export function App() {
     return (
       <main className="loading-screen">
         <div className="loading-brand">
-          <div><strong>Noobi.ai</strong><small>GAME PRODUCTION SYSTEM</small></div>
+          <div><strong>XiuPlay.ai</strong><small>GAME PRODUCTION SYSTEM</small></div>
         </div>
         {loadingError ? (
           <div className="loading-error" role="alert">
@@ -496,10 +511,12 @@ export function App() {
       className={`app-shell ${selected ? 'view-workbench' : 'view-home'}${transitionClass}`}
       style={transitionStyle}
     >
+      {!selected && <HomePixelAtmosphere />}
       <ProjectRail
         projects={projects}
         selectedId={selectedId}
         runtime={runtime}
+        activeProvider={activeAgentProvider}
         open={railOpen}
         collapsed={!selected && homeRailCollapsed}
         variant={selected ? 'workbench' : 'dashboard'}
@@ -528,11 +545,11 @@ export function App() {
           <button
             className="runtime-status"
             type="button"
-            title={runtime.error ?? runtimeLabel(runtime)}
+            title={runtime.error ?? runtimeLabel(runtime, activeAgentProvider)}
             onClick={() => openSettings()}
           >
             <span className={`runtime-dot state-${runtime.state}`} />
-            <span>{runtimeLabel(runtime)}</span>
+            <span>{runtimeLabel(runtime, activeAgentProvider)}</span>
           </button>
 
           <div className="topbar-project">
@@ -610,9 +627,9 @@ export function App() {
                 settings={settings}
                 imageGenerationAvailable={imageGenerationAvailable}
                 disabled={
-                  runtime.state !== 'ready' ||
-                  !runtime.account ||
-                  !imageGenerationAvailable
+                  runtime.state !== 'ready'
+                  || !agentCredentialsReady
+                  || !imageGenerationAvailable
                 }
                 onRun={runProject}
                 onStop={stopProject}

@@ -583,9 +583,13 @@ function AccountSettings({
       setProviders(result.agentProviders);
       // Never keep the plaintext key in renderer state after saving.
       setApiKeyDraft('');
-      setKeyMessage(result.runtime.state === 'ready'
+      const engineMessage = result.runtime.state === 'ready'
         ? '已保存，Qwen 引擎已就绪。'
-        : `已保存，但引擎仍未就绪：${result.runtime.error ?? '请稍后重试'}`);
+        : `已保存，但引擎仍未就绪：${result.runtime.error ?? '请稍后重试'}`;
+      // Main provisions the image service from this same key, so report both
+      // outcomes: the user should not have to discover a second screen.
+      const imageMessage = result.imageService?.message ?? '';
+      setKeyMessage(imageMessage ? `${engineMessage} ${imageMessage}` : engineMessage);
     } catch (error) {
       setKeyMessage(error instanceof Error ? error.message : '保存失败');
     } finally {

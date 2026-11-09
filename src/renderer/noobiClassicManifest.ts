@@ -1,5 +1,7 @@
 import noobiCarrySprite from './assets/noobi-sprite-carry.png';
 import noobiCelebrateSprite from './assets/noobi-sprite-celebrate.png';
+// Brand mascot: the XiuPlay neon lightning rabbit, used for the rest poses.
+import xiuplayRabbitIdle from './assets/xiuplay-rabbit-idle-256.png';
 import noobiIdleSprite from './assets/noobi-sprite-idle.png';
 import noobiPaintSprite from './assets/noobi-sprite-paint.png';
 import noobiPlaySprite from './assets/noobi-sprite-play.png';
@@ -70,9 +72,9 @@ export const CLASSIC_NOOBI_SPRITE_MANIFEST: NoobiSpriteManifest = {
     pivot: { x: 126, y: 320 },
   },
   animations: {
-    idle: singleFrame('classic-idle', noobiIdleSprite),
-    think: singleFrame('classic-think', noobiIdleSprite),
-    wait: singleFrame('classic-wait', noobiIdleSprite),
+    idle: singleFrame('classic-idle', xiuplayRabbitIdle),
+    think: singleFrame('classic-think', xiuplayRabbitIdle),
+    wait: singleFrame('classic-wait', xiuplayRabbitIdle),
     walk: {
       id: 'classic-walk',
       frames: [

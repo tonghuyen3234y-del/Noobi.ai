@@ -124,6 +124,11 @@ export function ApprovalModal({
                     <X size={14} /> 拒绝
                   </button>
                 ) : null}
+                {canDecide('cancel') ? (
+                  <button className="secondary-button" type="button" disabled={busy} onClick={() => void resolve('cancel')}>
+                    <X size={14} /> 取消本次任务
+                  </button>
+                ) : null}
                 {canDecide('accept') ? (
                   <button className="secondary-button" type="button" disabled={busy} onClick={() => void resolve('accept')}>
                     <Check size={14} /> 仅本次允许

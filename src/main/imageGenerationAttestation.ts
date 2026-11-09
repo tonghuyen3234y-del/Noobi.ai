@@ -398,7 +398,7 @@ async function indexManagedGeneratedImages(
   return found;
 }
 
-async function projectAssetMatches(
+export async function projectAssetMatches(
   root: string,
   relativePath: string,
   sha256: string,

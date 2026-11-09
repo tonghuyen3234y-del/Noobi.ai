@@ -33,7 +33,8 @@ describe('ProjectRail context menu', () => {
     expect(markup).toContain('mode-dashboard is-collapsed');
     expect(markup).toContain('class="brand" type="button" aria-label="展开首页侧栏"');
     expect(markup).not.toContain('class="rail-collapse"');
-    expect(markup).toContain('brand-monogram');
+    // The compact rail shows the brand logo image rather than a letter mark.
+    expect(markup).toContain('brand-logo is-compact');
     expect(markup).toContain('class="compact-create" type="button" title="首页"');
     expect(markup).toContain('lucide-house');
     expect(markup).not.toContain('lucide-plus');

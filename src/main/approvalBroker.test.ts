@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CodexAppServer } from './codexAppServer.js';
 import { ApprovalBroker } from './approvalBroker.js';
+import { createRuntimeHolder } from './agentProvider.js';
 
 function makeRuntime() {
   return {
@@ -10,6 +11,20 @@ function makeRuntime() {
 }
 
 describe('ApprovalBroker', () => {
+  it('sends a pending approval to its original provider after a provider switch', () => {
+    const first = makeRuntime();
+    const second = makeRuntime();
+    const holder = createRuntimeHolder(first);
+    const broker = new ApprovalBroker(holder.switching(), () => 'project-1');
+    let token = '';
+    broker.on('approval', (approval) => { token = approval.token; });
+    broker.handle({ id: 41, method: 'item/commandExecution/requestApproval', params: { command: 'npm test' } });
+    holder.replace(second);
+    broker.resolve(token, 'decline');
+    expect(first.respondToServerRequest).toHaveBeenCalledWith(41, expect.anything());
+    expect(second.respondToServerRequest).not.toHaveBeenCalled();
+  });
+
   it('returns structured answers for request_user_input', () => {
     const runtime = makeRuntime();
     const broker = new ApprovalBroker(runtime, () => 'project-1');
@@ -62,7 +77,7 @@ describe('ApprovalBroker', () => {
     expect(runtime.rejectServerRequest).toHaveBeenCalledWith(
       'unknown-1',
       -32601,
-      'Noobi.ai does not support attestation/generate',
+      'XiuPlay.ai does not support attestation/generate',
     );
   });
 });

@@ -128,8 +128,14 @@ export function HomeDashboard({
   // generation is judged separately because it is only needed for visual work.
   const activeProvider = agentProviders.find((provider) => provider.active) ?? null;
   const usesApiKeyProvider = activeProvider ? activeProvider.requiresImageApi : false;
+  // An API-key engine has no account object: its credential is the key, which
+  // readiness already verified. Requiring `runtime.account` here left Qwen
+  // permanently unready even though the engine had started successfully.
+  const credentialReady = usesApiKeyProvider
+    ? Boolean(activeProvider?.ready)
+    : Boolean(runtime.account);
   const runtimeReady = runtime.state === 'ready'
-    && Boolean(runtime.account)
+    && credentialReady
     && (activeProvider ? activeProvider.ready : true);
   const launchReady = runtimeReady && imageGenerationAvailable && idea.trim().length > 0 && !busy;
   const runtimeBlocker = activeProvider && !activeProvider.ready

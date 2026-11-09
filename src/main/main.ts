@@ -70,6 +70,7 @@ import { GodotEnvironmentService } from './godotEnvironmentService.js';
 import {
   archiveLatestGameplayExperienceReport,
   GameplayExperienceEvaluator,
+  readGameplayPlaytestManifest,
   readLatestGameplayExperienceReport,
   writeGameplayExperienceFailureReport,
 } from './gameplayExperienceEvaluator.js';
@@ -118,17 +119,23 @@ import {
 } from './projectStore.js';
 import { PromptTemplateStore } from './promptTemplateStore.js';
 import { verifyVisualAssetCoverage } from './visualAssetCoverage.js';
-import { verifyWebProductionBuild } from './webProductionBuild.js';
+import { fingerprintWebDeliveryWorkspace, verifyWebProductionBuild } from './webProductionBuild.js';
 import {
   synchronizeGodotPresentationPolicy,
   synchronizeWorkspaceHostPolicy,
 } from './workspaceTemplate.js';
 
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+/** Bailian image synthesis endpoint, shared by every Qwen deployment. */
+const DASHSCOPE_IMAGE_ENDPOINT = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis';
+/** Fast, cheap default that produced usable game art in testing. */
+const DASHSCOPE_IMAGE_MODEL = 'wanx2.1-t2i-turbo';
 const smokeCapture = process.env.NOOBI_SMOKE_CAPTURE?.trim() || null;
-if (smokeCapture) app.setPath('userData', resolve('.noobi-smoke/user-data'));
+if (smokeCapture && process.env.NOOBI_SMOKE_REAL_USERDATA !== '1') {
+  app.setPath('userData', resolve('.noobi-smoke/user-data'));
+}
 
-app.setName('Noobi.ai');
+app.setName('XiuPlay.ai');
 
 const runtime = new CodexAppServer({
   codexHome: join(app.getPath('userData'), 'codex-home'),
@@ -176,8 +183,6 @@ let providerCredentialStore: ProviderCredentialStore;
 let agentProviderManager: AgentProviderManager;
 /** Last provider start failure, surfaced in readiness instead of aborting launch. */
 let agentRuntimeFault: string | null = null;
-/** Runtimes whose status is already forwarded to the renderer. */
-const boundRuntimes = new Set<unknown>();
 let mainWindow: BrowserWindow | null = null;
 let shuttingDown = false;
 const mediaProviderTests = new Map<MediaCapability, MediaProviderTestResult>();
@@ -188,7 +193,7 @@ if (!hasSingleInstanceLock) {
 } else {
   void app.whenReady().then(launch).catch((error) => {
     if (smokeCapture) process.stderr.write(`Noobi UI smoke failed: ${asError(error).message}\n`);
-    else dialog.showErrorBox('Noobi.ai 无法启动', asError(error).message);
+    else dialog.showErrorBox('XiuPlay.ai 无法启动', asError(error).message);
     app.exit(1);
   });
   app.on('second-instance', () => {
@@ -267,10 +272,10 @@ async function launch(): Promise<void> {
     credentials: providerCredentialStore,
     imageApiConfigured: async () => activeMediaProvider('image') !== null,
   });
-  mcpConfigManager = new McpConfigManager(runtime);
-  approvalBroker = new ApprovalBroker(runtime, (threadId) => threadRoutes.get(threadId)?.projectId ?? null);
+  mcpConfigManager = new McpConfigManager(agentRuntime);
+  approvalBroker = new ApprovalBroker(agentRuntime, (threadId) => threadRoutes.get(threadId)?.projectId ?? null);
   mediaToolBroker = new MediaToolBroker({
-    server: runtime,
+    server: agentRuntime,
     assetStore,
     assetPlanStore,
     generationService: mediaGenerationService,
@@ -335,7 +340,7 @@ async function createWindow(): Promise<void> {
     minWidth: 760,
     minHeight: 620,
     backgroundColor: '#11120f',
-    title: 'Noobi.ai',
+    title: 'XiuPlay.ai',
     show: false,
     webPreferences: {
       preload: join(moduleDirectory, 'preload.cjs'),
@@ -363,24 +368,54 @@ async function createWindow(): Promise<void> {
   if (rendererUrl) await window.loadURL(rendererUrl);
   else await window.loadFile(join(moduleDirectory, '../renderer/index.html'));
 
+  if (process.env.NOOBI_PROBE_RENDERER === '1') {
+    // Surface renderer crashes: a white page is usually an uncaught exception
+    // in React, not a styling problem.
+    const diag = await window.webContents.executeJavaScript(
+      'JSON.stringify({ body: document.body.innerText.slice(0,200),' +
+      ' root: (document.getElementById("root")||{}).innerHTML ? "has-content" : "EMPTY",' +
+      ' hasNoobi: typeof window.noobi, hasOnAgentEvent: typeof (window.noobi && window.noobi.onAgentEvent) })',
+      true,
+    ).catch((e: Error) => `PROBE_FAIL ${e.message}`);
+    process.stdout.write(`RENDERER ${diag}\n`);
+  }
+  if (process.env.NOOBI_RESIZE_PROBE === '1') {
+    // Reproduce the "blank when shrunk" report: shrink, then ask the page what
+    // it actually contains at each size.
+    for (const [w, h] of [[760, 620], [820, 640], [1000, 760]]) {
+      window.setSize(w, h, false);
+      await delay(900);
+      const state = await window.webContents.executeJavaScript(
+        'JSON.stringify({' +
+        '  vw: window.innerWidth, vh: window.innerHeight,' +
+        '  shell: document.querySelector(".app-shell") ? document.querySelector(".app-shell").className : null,' +
+        '  rootChildren: (document.getElementById("root")||{}).childElementCount,' +
+        '  text: document.body.innerText.replace(/\\s+/g," ").slice(0,80),' +
+        '  railW: document.querySelector(".project-rail") ? Math.round(document.querySelector(".project-rail").getBoundingClientRect().width) : null,' +
+        '  heroW: document.querySelector(".home-hero") ? Math.round(document.querySelector(".home-hero").getBoundingClientRect().width) : null,' +
+        '  heroH: document.querySelector(".home-hero") ? Math.round(document.querySelector(".home-hero").getBoundingClientRect().height) : null,' +
+        '  dashW: document.querySelector(".home-dashboard") ? Math.round(document.querySelector(".home-dashboard").getBoundingClientRect().width) : null' +
+        '})',
+        true,
+      ).catch((e: Error) => `PROBE_FAIL ${e.message}`);
+      process.stdout.write(`RESIZE ${w}x${h} ${state}\n`);
+    }
+  }
   if (smokeCapture) await captureSmoke(window, smokeCapture);
 }
 
 function bindRuntimeEvents(): void {
-  runtime.on('status', (status) => {
+  agentRuntime.on('status', (status) => {
     if (status.state !== 'ready') approvalBroker.invalidateAll();
-    // Only the active provider may drive the UI status; the idle provider's
-    // runtime must never overwrite the card the user is looking at.
-    if (agentProviderManager.activeId !== 'openai') return;
     broadcast('noobi:event:runtime', runtimeStatusForUi(status));
   });
-  runtime.on('diagnostic', (message: string) => {
+  agentRuntime.on('diagnostic', (message: string) => {
     if (process.env.NOOBI_DEBUG === '1') process.stderr.write(`[codex] ${message}\n`);
   });
-  runtime.on('serverRequest', (request) => {
+  agentRuntime.on('serverRequest', (request) => {
     if (!mediaToolBroker.handle(request)) approvalBroker.handle(request);
   });
-  runtime.on('notification', (notification: { method: string; params?: unknown }) => {
+  agentRuntime.on('notification', (notification: { method: string; params?: unknown }) => {
     if (notification.method === 'serverRequest/resolved') {
       const requestId = readRequestId(asRecord(notification.params)?.requestId);
       if (requestId !== null) approvalBroker.resolveFromServer(requestId);
@@ -468,18 +503,24 @@ function bindHarnessEvents(): void {
 
 function bindIpc(): void {
   handle('noobi:bootstrap', async (): Promise<BootstrapPayload> => {
+    const bootstrapStart = Date.now();
+    const mark = (label: string): void => {
+      if (process.env.NOOBI_BOOTSTRAP_TIMING !== '1') return;
+      process.stderr.write(`[bootstrap] ${label} +${Date.now() - bootstrapStart}ms\n`);
+    };
+    mark('start');
     const projects = await projectStore.list();
+    mark('projects');
     const settings = await projectStore.getSettings();
     // Start the provider the user actually selected. Both providers are Codex
     // processes, but each has its own home and credentials, so only one of them
     // should be spawned at bootstrap.
-    if (settings.agentProvider === 'openai') {
-      await runtime.start().catch(() => runtime.status);
-    }
     const events = Object.fromEntries(
       await Promise.all(projects.map(async (project) => [project.id, await eventLog.read(project.id)] as const)),
     );
+    mark('events');
     await applyConfiguredProvider(settings.agentProvider);
+    mark('provider');
     const activeRuntime = runtimeHolder.current;
     return {
       projects,
@@ -519,10 +560,15 @@ function bindIpc(): void {
     // Rebuild the engine and repoint the holder, otherwise the placeholder
     // runtime that reported "no API key" stays active until the app restarts.
     await applyConfiguredProvider(saved.agentProvider);
+    // The same key drives image generation, so configure that service too:
+    // asking a Qwen user to re-enter the identical key in a second screen was
+    // pure friction, and forgetting it blocked every run that needed art.
+    const imageService = await configureDashScopeImageService(apiKey);
     return {
       credentials: await providerCredentialStore.status(['openai', 'qwen']),
       runtime: runtimeStatusForUi(runtimeHolder.current.status),
       agentProviders: await agentProviderManager.allReadiness(),
+      imageService,
     };
   });
   handle('noobi:agent:select', async (_event, provider: unknown) => {
@@ -763,10 +809,12 @@ function bindIpc(): void {
       // used to make every harness run unusable.
       const activeRuntime = runtimeHolder.current;
       const status = await activeRuntime.start();
-      if (!status.account) {
-        throw new Error(agentProviderManager.activeId === 'openai'
-          ? '请先登录 ChatGPT，再启动游戏 Agent'
-          : 'Qwen 引擎未就绪：请在设置 → 运行时与账户中填写阿里云百炼 API Key');
+      // An API-key engine reports no account: its credential is the key. Only
+      // the ChatGPT route needs a signed-in account, so checking `account`
+      // unconditionally rejected every Qwen run with "engine not ready".
+      const providerUsesApiKey = agentProviderManager.activeId !== 'openai';
+      if (!providerUsesApiKey && !status.account) {
+        throw new Error('请先登录 ChatGPT，再启动游戏 Agent');
       }
       if (status.state !== 'ready') {
         throw new Error(status.error ?? `${agentProviderManager.activeId} 运行时未就绪`);
@@ -1081,7 +1129,7 @@ function bindIpc(): void {
   handle('noobi:environment:refresh', async () => {
     await Promise.all([
       godotEnvironmentService.refresh(),
-      runtime.refresh().catch(() => runtime.status),
+      agentRuntime.refresh().catch(() => agentRuntime.status),
     ]);
     return environmentStatusSnapshot();
   });
@@ -1141,7 +1189,7 @@ function bindIpc(): void {
       setActive: normalized.enabled,
     });
     mediaProviderTests.delete(normalized.capability);
-    broadcast('noobi:event:runtime', runtimeStatusForUi(runtime.status));
+    broadcast('noobi:event:runtime', runtimeStatusForUi(agentRuntime.status));
     return mediaProviderSetting(saved);
   });
   handle('noobi:media-provider:test', async (_event, capability: MediaCapability) => {
@@ -1151,7 +1199,7 @@ function bindIpc(): void {
     let ok = Boolean(provider);
     let message = ok
       ? configuredMediaProviderDiagnostic(provider!.displayName)
-      : kind === 'image' && runtime.status.capabilities.imageGeneration
+      : kind === 'image' && agentRuntime.status.capabilities.imageGeneration
         ? '未发现可用图像 API；制作时将回退 Codex ImageGen。'
         : '当前服务未启用，或缺少所需 API Key。';
     if (kind === 'audio' && (provider?.presetId === 'minimax-audio' || provider?.presetId === 'minimax-audio-cn')) {
@@ -1183,15 +1231,15 @@ function bindIpc(): void {
     if (!input || typeof input !== 'object' || typeof input.id !== 'string' || typeof input.enabled !== 'boolean') {
       throw new Error('无效的 Skill 设置');
     }
-    const skills = await runtime.listSkills({ forceReload: true });
+    const skills = await agentRuntime.listSkills({ forceReload: true });
     const selected = skills.find((skill) => skill.path === input.id);
     if (!selected) throw new Error('该 Skill 不在当前 Codex 技能目录中');
     await assertRequiredImageGenerationSkillToggleAllowed(
-      runtime.status.codexHome,
+      agentRuntime.status.codexHome,
       selected,
       input.enabled,
     );
-    await runtime.setSkillEnabled({ path: selected.path }, input.enabled);
+    await agentRuntime.setSkillEnabled({ path: selected.path }, input.enabled);
     const refreshed = await listSkillSettings();
     const result = refreshed.find((skill) => skill.id === selected.path);
     if (!result) throw new Error('Skill 状态刷新失败');
@@ -1359,6 +1407,39 @@ function mediaProviderSetting(provider: MediaProviderSummary): MediaProviderSett
   };
 }
 
+/**
+ * Create or refresh the Qwen-Image provider using the engine's DashScope key.
+ *
+ * Returns a short status the settings UI can show. Never throws: a failure here
+ * must not roll back a successfully saved engine key.
+ */
+async function configureDashScopeImageService(
+  apiKey: string,
+): Promise<{ configured: boolean; message: string }> {
+  try {
+    const existing = mediaProviderStore
+      .list('image')
+      .find((provider) => provider.presetId === 'dashscope-image');
+    const saved = await mediaProviderStore.upsert({
+      ...(existing ? { id: existing.id } : {}),
+      presetId: 'dashscope-image',
+      displayName: 'Qwen-Image（百炼）',
+      endpoint: DASHSCOPE_IMAGE_ENDPOINT,
+      model: DASHSCOPE_IMAGE_MODEL,
+      apiKey,
+      enabled: true,
+      setActive: true,
+    });
+    await mediaProviderStore.setActive('image', saved.id);
+    return { configured: true, message: '已自动配置 Qwen-Image 生图服务。' };
+  } catch (error) {
+    return {
+      configured: false,
+      message: `生图服务自动配置失败：${asError(error).message}。请在设置 → 媒体 API 中手动添加。`,
+    };
+  }
+}
+
 function activeMediaProvider(kind: MediaCapability): MediaProviderSummary | null {
   const provider = mediaProviderStore.list(kind).find((candidate) => candidate.active) ?? null;
   if (!provider || !provider.enabled || (provider.auth !== 'none' && !provider.hasApiKey)) return null;
@@ -1404,7 +1485,7 @@ function validateMediaProviderInput(input: SaveMediaProviderInput): SaveMediaPro
 }
 
 async function listSkillSettings(): Promise<SkillSetting[]> {
-  const skills = await runtime.listSkills({ forceReload: false });
+  const skills = await agentRuntime.listSkills({ forceReload: false });
   const unique = new Map<string, SkillSetting>();
   for (const skill of skills) {
     if (!skill.path || unique.has(skill.path)) continue;
@@ -1460,10 +1541,19 @@ async function listPromptSettings(): Promise<PromptTemplateSetting[]> {
  */
 async function applyConfiguredProvider(provider: AgentProviderId): Promise<void> {
   agentProviderManager.select(provider);
+  const t0 = Date.now();
+  const trace = (label: string): void => {
+    if (process.env.NOOBI_BOOTSTRAP_TIMING === '1') {
+      process.stderr.write(`[provider] ${label} +${Date.now() - t0}ms\n`);
+    }
+  };
   try {
+    trace('begin');
     const active = await agentProviderManager.runtimeOrPlaceholder(provider);
+    trace('runtime-or-placeholder');
     // A placeholder never throws; its status carries the reason instead.
     if (active.status.state !== 'error') await active.start();
+    trace('started');
     runtimeHolder.replace(active);
     agentRuntimeFault = active.status.error;
   } catch (error) {
@@ -1475,7 +1565,6 @@ async function applyConfiguredProvider(provider: AgentProviderId): Promise<void>
       process.stderr.write(`[provider] ${provider} unavailable: ${asError(error).message}\n`);
     }
   }
-  bindActiveRuntimeStatus();
 }
 
 /**
@@ -1493,18 +1582,6 @@ async function clearIncompatibleProjectModels(): Promise<void> {
   await Promise.all(projects
     .filter((project) => project.model && !known.has(project.model))
     .map((project) => updateProject(project.id, { model: null }).catch(() => undefined)));
-}
-
-/** Forward the *selected* engine's status so the UI card never shows a stale one. */
-function bindActiveRuntimeStatus(): void {
-  const active = runtimeHolder.current;
-  if (active === runtime || boundRuntimes.has(active)) return;
-  boundRuntimes.add(active);
-  active.on('status', (status: RuntimeStatus) => {
-    if (active !== runtimeHolder.current) return;
-    if (status.state !== 'ready') approvalBroker.invalidateAll();
-    broadcast('noobi:event:runtime', runtimeStatusForUi(status));
-  });
 }
 
 function runtimeStatusForUi(status: RuntimeStatus): RuntimeStatus {
@@ -1529,7 +1606,7 @@ async function environmentStatusSnapshot(): Promise<EnvironmentStatusSnapshot> {
     source: 'process',
     message: `Electron 内置 Node.js ${process.version} 已就绪。`,
   };
-  const codexTool = codexEnvironmentTool(runtime.status);
+  const codexTool = codexEnvironmentTool(agentRuntime.status);
   const tools = [nodeTool, codexTool, godot.tool];
   const canCreateGodotProjects = tools.every((tool) => tool.state === 'ready')
     && godot.canCreateProjects;
@@ -1625,6 +1702,9 @@ async function executeHarness(
         audioGenerationRequirement.state !== 'not-required',
         signal,
       ),
+      ...(project.engine === 'web'
+        ? { captureDeliveryRevision: () => fingerprintWebDeliveryWorkspace(project.root) }
+        : {}),
     });
     await Promise.allSettled([previews.stop(project.id), playtestPreviews.stop(project.id)]);
     await waitForAssetIngestions(project.id);
@@ -1817,6 +1897,12 @@ async function validateProjectDelivery(
   await waitForAssetIngestions(project.id);
   throwIfDeliveryAborted(signal);
 
+  try {
+    await readGameplayPlaytestManifest(project.root);
+  } catch (error) {
+    findings.push(`PLAYTEST_CONFIG: ${asError(error).message} 修正 .noobi/playtest.json；即使构建尚未完成，也必须先提供合法的试玩配置。`);
+  }
+
   if (project.engine === 'godot') {
     try {
       await verifyGodotProject(project, true, signal);
@@ -1885,7 +1971,7 @@ async function validateProjectDelivery(
   }
 
   try {
-    const codexHome = runtime.status.codexHome;
+    const codexHome = agentRuntime.status.codexHome;
     if (codexHome) {
       await imageGenerationAttestations.bootstrapFromManagedOutputs({
         projectId: project.id,
@@ -2112,7 +2198,7 @@ async function verifyHostGeneratedImage(
   project: ProjectRecord,
   assets: readonly GameAssetRecord[],
 ) {
-  const codexHome = runtime.status.codexHome;
+  const codexHome = agentRuntime.status.codexHome;
   if (codexHome) {
     await imageGenerationAttestations.bootstrapFromManagedOutputs({
       projectId: project.id,
@@ -2129,7 +2215,7 @@ async function verifyHostGeneratedImage(
 }
 
 async function resolveImageGenerationSkill(): Promise<{ name: string; path: string } | null> {
-  return resolveRequiredImageGenerationSkill(runtime, runtime.status);
+  return resolveRequiredImageGenerationSkill(agentRuntime, agentRuntime.status);
 }
 
 async function ingestGeneratedImage(
@@ -2142,7 +2228,7 @@ async function ingestGeneratedImage(
   const sourcePath = readString(item.savedPath);
   if (!sourcePath) return;
 
-  const codexHome = runtime.status.codexHome;
+  const codexHome = agentRuntime.status.codexHome;
   if (!codexHome) throw new Error('Codex image output arrived without a managed CODEX_HOME');
   const [canonicalHome, canonicalSource] = await Promise.all([
     realpath(codexHome),
@@ -2328,12 +2414,12 @@ async function maybeGenerateGameIcon(projectId: string): Promise<void> {
     if (current.icon?.source === 'ai') return;
     let icon = await generateAiProjectIcon(current, mediaGenerationService);
     if (!icon) {
-      const status = runtime.status;
+      const status = agentRuntime.status;
       const skill = status.capabilities.imageGeneration
         ? await resolveImageGenerationSkill()
         : null;
       if (!skill) return;
-      icon = await generateCodexProjectIcon(current, runtime, skill);
+      icon = await generateCodexProjectIcon(current, agentRuntime, skill);
     }
     if (!icon) return;
     const latest = await projectStore.get(projectId);
@@ -2371,7 +2457,7 @@ function handle(
 ): void {
   ipcMain.handle(channel, (event, ...args) => {
     assertTrustedRenderer(event);
-    if (shuttingDown) throw new Error('Noobi.ai 正在退出');
+    if (shuttingDown) throw new Error('XiuPlay.ai 正在退出');
     return listener(event, ...args);
   });
 }
@@ -2471,12 +2557,25 @@ async function captureSmoke(window: BrowserWindow, target: string): Promise<void
   if (process.env.NOOBI_SMOKE_NARROW === '1') {
     window.setSize(760, 800, false);
   }
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 2_500));
-  const healthy = await window.webContents.executeJavaScript(
-    `Boolean(document.querySelector('.app-shell')) && !document.querySelector('.loading-error')`,
-    true,
-  ) as boolean;
-  if (!healthy) throw new Error('Renderer did not reach the Noobi workbench');
+  // Wait for the real UI, not a fixed delay: bootstrap must resolve before the
+  // shell exists, and capturing earlier produced a white page.
+  let healthy = false;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+    healthy = await window.webContents.executeJavaScript(
+      `Boolean(document.querySelector('.app-shell')) && !document.querySelector('.loading-error')`,
+      true,
+    ).catch(() => false) as boolean;
+    if (healthy) break;
+  }
+  if (!healthy) {
+    const loadingText = await window.webContents.executeJavaScript(
+      'document.body.innerText.slice(0, 200)', true,
+    ).catch(() => 'unknown');
+    throw new Error(`Renderer did not reach the XiuPlay workbench (showing: ${String(loadingText)})`);
+  }
+  // Let React paint the first frame after the shell appears.
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 800));
   const smokeTheme = process.env.NOOBI_SMOKE_THEME;
   if (smokeTheme === 'light' || smokeTheme === 'dark') {
     await window.webContents.executeJavaScript(
@@ -2609,6 +2708,66 @@ async function captureSmoke(window: BrowserWindow, target: string): Promise<void
       throw new Error(`Model picker did not open correctly: ${JSON.stringify(menu)}`);
     }
     process.stdout.write(`Noobi model picker opened ${JSON.stringify(menu)}\n`);
+  }
+  if (process.env.NOOBI_SMOKE_DIAG_HOME === '1') {
+    // Diagnose the home launch gate: report every input the UI uses, so a
+    // silently-refused click names the real cause instead of doing nothing.
+    const diag = await window.webContents.executeJavaScript(
+      `(() => {
+        const body = document.body.innerText || '';
+        const blocker = document.querySelector('.home-launch-blocker');
+        const chip = document.querySelector('.asset-requirement');
+        const btn = document.querySelector('.home-create-button');
+        const model = document.querySelector('select[aria-label="模型"]');
+        const providers = (window).__noobiDiag?.providers ?? null;
+        return {
+          runtimeState: (window).__noobiDiag?.runtimeState ?? null,
+          launchBlocker: blocker ? blocker.innerText.replace(/\\s+/g, ' ').trim() : null,
+          assetChip: chip ? chip.innerText.replace(/\\s+/g, ' ').trim() : null,
+          buttonTitle: btn ? btn.getAttribute('title') : null,
+          selectedModel: model && model.selectedOptions[0] ? model.selectedOptions[0].textContent : null,
+          hasComposer: /描述你想制作的游戏/.test(body),
+        };
+      })()`,
+      true,
+    );
+    process.stdout.write(`Noobi home diag ${JSON.stringify(diag)}\n`);
+  }
+  if (process.env.NOOBI_SMOKE_VIEW === 'settings-media') {
+    // Media providers drive image generation; a missing preset here means the
+    // user cannot select the service that actually works for them.
+    await window.webContents.executeJavaScript(
+      `document.querySelector('.project-item')?.click()`,
+      true,
+    );
+    await delay(800);
+    await window.webContents.executeJavaScript(
+      `document.querySelector('[aria-label="打开设置"]')?.click()`,
+      true,
+    );
+    await delay(500);
+    const opened = await window.webContents.executeJavaScript(
+      `(() => {
+        const trigger = Array.from(document.querySelectorAll('.settings-nav button'))
+          .find((node) => node.textContent?.includes('媒体 API'));
+        if (!(trigger instanceof HTMLButtonElement)) return false;
+        trigger.click();
+        return true;
+      })()`,
+      true,
+    ) as boolean;
+    if (!opened) throw new Error('Media API settings section was not available');
+    await delay(1_200);
+    const options = await window.webContents.executeJavaScript(
+      `Array.from(document.querySelectorAll('select')).flatMap((s) =>
+        Array.from(s.options).map((o) => o.value))`,
+      true,
+    ) as string[];
+    const imageOptions = options.filter((value) => /image|dashscope|flux|imagen|stability/u.test(value));
+    process.stdout.write(`Noobi image provider options ${JSON.stringify(imageOptions)}\n`);
+    if (!imageOptions.includes('dashscope-image')) {
+      throw new Error('Qwen-Image preset is missing from the media provider list');
+    }
   }
   if (process.env.NOOBI_SMOKE_VIEW === 'settings-runtime') {
     // The settings trigger lives in the workbench shell, so enter a project first.
@@ -3260,7 +3419,74 @@ async function captureSmoke(window: BrowserWindow, target: string): Promise<void
     );
     await delay(250);
   }
+  // Force a repaint and let the compositor settle: offscreen-less captures
+  // sometimes grab a frame before gradients are composited.
+  window.webContents.invalidate();
+  await delay(600);
+  if (process.env.NOOBI_PROBE_ELEM === '1') {
+    const info = await window.webContents.executeJavaScript(
+      'JSON.stringify((() => {' +
+      '  const h = document.querySelector(".home-hero");' +
+      '  if (!h) return { err: "no hero" };' +
+      '  const r = h.getBoundingClientRect();' +
+      '  const pt = [Math.round(r.left + r.width/2), Math.round(r.top + 60)];' +
+      '  const el = document.elementFromPoint(pt[0], pt[1]);' +
+      '  const chain = [];' +
+      '  let n = el;' +
+      '  for (let i = 0; i < 6 && n; i++) {' +
+      '    const cs = getComputedStyle(n);' +
+      '    chain.push((n.id || n.className || n.tagName) + " => " + cs.backgroundColor + " | " + cs.backgroundImage.slice(0,28));' +
+      '    n = n.parentElement;' +
+      '  }' +
+      '  return { pt, chain };' +
+      '})())',
+      true,
+    );
+    process.stdout.write('PROBE ' + String(info) + '\n');
+  }
   const image = await window.webContents.capturePage();
+  if (process.env.NOOBI_SMOKE_HERO === '1') {
+    // Report the actual painted pixel where the hero sits: computed styles can
+    // say "dark" while a sibling panel paints white over it.
+    const heroPoint = await window.webContents.executeJavaScript(
+      `(() => {
+         const h = document.querySelector('.home-hero');
+         if (!h) return null;
+         const r = h.getBoundingClientRect();
+         return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + 80) };
+       })()`,
+      true,
+    ) as { x: number; y: number } | null;
+    if (heroPoint) {
+      const size = image.getSize();
+      const scale = size.width / 1500;
+      const bitmap = image.toBitmap();
+      const px = Math.min(size.width - 1, Math.round(heroPoint.x * scale));
+      const py = Math.min(size.height - 1, Math.round(heroPoint.y * scale));
+      const offset = (py * size.width + px) * 4;
+      process.stdout.write(
+        `Hero pixel rgba(${bitmap[offset]}, ${bitmap[offset + 1]}, ${bitmap[offset + 2]}, ${bitmap[offset + 3]})\n`,
+      );
+    }
+    const heroRect = await window.webContents.executeJavaScript(
+      `(() => { const h = document.querySelector('.home-hero'); if (!h) return null;
+         const r = h.getBoundingClientRect();
+         return { x: Math.round(r.left), y: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) }; })()`,
+      true,
+    ) as { x: number; y: number; width: number; height: number } | null;
+    if (heroRect && heroRect.width > 0) {
+      const scale = image.getSize().width / (await window.webContents.executeJavaScript('window.innerWidth', true) as number);
+      const cropped = image.crop({
+        x: Math.round(heroRect.x * scale),
+        y: Math.round(heroRect.y * scale),
+        width: Math.round(heroRect.width * scale),
+        height: Math.round(heroRect.height * scale),
+      });
+      const { writeFile: wf } = await import('node:fs/promises');
+      await wf('/tmp/hero-crop.png', cropped.toPNG());
+      process.stdout.write('Hero crop written to /tmp/hero-crop.png\n');
+    }
+  }
   const output = resolve(target);
   await mkdir(dirname(output), { recursive: true });
   const { writeFile } = await import('node:fs/promises');
@@ -3330,7 +3556,7 @@ async function recoverInterruptedProjects(): Promise<void> {
       .map((project) => projectStore.update(project.id, {
         status: 'stopped',
         activeTurnId: null,
-        lastError: 'Noobi.ai 上次退出时，该任务没有确认完成。请检查文件后再继续。',
+        lastError: 'XiuPlay.ai 上次退出时，该任务没有确认完成。请检查文件后再继续。',
       })),
   );
 }

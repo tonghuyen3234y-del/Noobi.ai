@@ -6328,6 +6328,52 @@ a {
   }
 }
 
+/*
+ * Below 800px the rail is a fixed overlay, so it must not reserve layout width.
+ * Between 760px (the window minimum) and 799px the previous rules left the rail
+ * painted over the content with no offset, which read as a blank page.
+ */
+@media (max-width: 799px) {
+  .app-shell {
+    /* Keep content clear of the overlay rail and guarantee a scroll container. */
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .view-home .workspace,
+  .view-workbench .workspace {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .home-dashboard,
+  .home-scroll,
+  .home-hero {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .home-hero {
+    /* The desktop 720px floor leaves nothing visible on a short window. */
+    min-height: min(560px, calc(100vh - 90px));
+    padding-bottom: 24px;
+  }
+
+  .home-hero-content {
+    padding: clamp(40px, 8vh, 80px) 14px 28px;
+  }
+
+  .home-hero h1 {
+    font-size: clamp(24px, 5.2vw, 38px);
+    line-height: 1.25;
+  }
+
+  .home-prompt-card {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
 @media (min-width: 800px) {
   body {
     font-size: 14px;
@@ -6508,27 +6554,41 @@ a {
 }
 
 .app-shell.view-home {
-  background-color: #e8f3ff;
-  background-image:
-    linear-gradient(180deg, rgba(247, 251, 255, 0.03) 0%, rgba(247, 251, 255, 0.12) 42%, rgba(249, 251, 255, 0.58) 100%),
-    radial-gradient(ellipse at 50% 38%, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.04) 58%, transparent 78%),
-    url('../../docs/images/noobi-snow-mountain-hero.png');
-  background-position: center, center, center 46%;
+  position: relative;
+  isolation: isolate;
+  background-color: #a18aeb;
+  background-image: url('./assets/noobi-lavender-cloud-sea.png');
+  background-position: center;
   background-repeat: no-repeat;
-  background-size: cover, cover, cover;
-  image-rendering: pixelated;
+  background-size: cover;
 }
 
-:root[data-theme='dark'] .app-shell.view-home {
-  background-color: #15213a;
-  background-image:
-    linear-gradient(180deg, rgba(12, 20, 38, 0.38), rgba(12, 18, 32, 0.76)),
-    radial-gradient(ellipse at 50% 38%, rgba(31, 45, 72, 0.06), rgba(12, 18, 32, 0.58) 78%),
-    url('../../docs/images/noobi-snow-mountain-hero.png');
+.home-pixel-atmosphere {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
 }
 
 .view-home .workspace {
+  position: relative;
+  z-index: 1;
   background: transparent;
+}
+
+:root[data-theme='dark'] .view-home .home-dashboard {
+  --studio-muted: #e2d7ef;
+  --glass-surface: rgba(36, 27, 57, 0.72);
+  --glass-chip: rgba(36, 27, 57, 0.54);
+  --glass-chip-hover: rgba(56, 39, 82, 0.72);
+}
+
+@media (max-width: 799px), (hover: none), (pointer: coarse), (prefers-reduced-motion: reduce) {
+  .home-pixel-atmosphere {
+    display: none;
+  }
 }
 
 .project-rail {
@@ -6845,7 +6905,7 @@ a {
   border: 1px solid transparent;
   border-radius: 12px;
   background: transparent;
-  color: var(--studio-muted);
+  color: #453363;
 }
 
 .home-mobile-menu:hover,
@@ -6890,6 +6950,7 @@ a {
   text-align: center;
 }
 
+
 .home-hero h1 {
   max-width: 900px;
   margin: 28px 0 0;
@@ -6910,7 +6971,7 @@ a {
 .home-hero-content > p {
   max-width: 680px;
   margin: 17px 0 0;
-  color: var(--studio-muted);
+  color: #453363;
   font-size: 15px;
   line-height: 1.7;
   text-wrap: balance;
@@ -10681,6 +10742,25 @@ a {
   text-shadow: none;
 }
 
+/* Brand logo: the neon rabbit mark replaces the old monogram letter. */
+.brand-logo {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  /* The icon is already a squircle with transparent corners, so the radius
+     must not clip it again; a soft shadow lifts it off the rail instead. */
+  border-radius: 11px;
+  object-fit: contain;
+  image-rendering: auto;
+  box-shadow: 0 1px 4px rgba(9, 9, 9, 0.18);
+}
+
+.brand-logo.is-compact {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+
 .rail-collapse {
   display: none;
 }
@@ -10950,4 +11030,60 @@ a {
 
 .settings-modal .provider-key-form {
   margin-top: 14px;
+}
+
+
+
+
+
+/* --------------------------------------------------------------------------
+   Narrow windows (760-799px)
+
+   The rail is a fixed overlay below 800px, but the content column never made
+   room for it, so at the 760px window minimum the rail painted over the page
+   and the result looked blank. These rules are last so they win the cascade.
+   -------------------------------------------------------------------------- */
+
+@media (max-width: 799px) {
+  .view-home .project-rail,
+  .view-workbench .project-rail {
+    /* Overlay only: never reserve layout width at this size. */
+    width: min(84vw, 280px);
+  }
+
+  .view-home .workspace,
+  .view-workbench .workspace,
+  .view-home .home-dashboard,
+  .view-home .home-scroll,
+  .view-home .home-hero,
+  .view-home .home-hero-content {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .view-home .home-hero {
+    min-height: auto;
+    padding-bottom: 28px;
+  }
+
+  .view-home .home-hero-content {
+    padding: 44px 16px 24px;
+  }
+
+  .view-home .home-hero h1 {
+    margin-top: 18px;
+    font-size: clamp(22px, 5vw, 36px);
+    line-height: 1.28;
+  }
+
+  .view-home .home-hero-content > p {
+    margin-top: 12px;
+    font-size: 14px;
+  }
+
+  .view-home .home-prompt-card {
+    width: 100%;
+    margin-top: 20px;
+  }
 }

@@ -14,6 +14,29 @@ afterEach(async () => {
 });
 
 describe('visual asset coverage', () => {
+  it('does not count copied image bytes as different card faces', async () => {
+    const fixture = await makeFixture();
+    const faces = await Promise.all(Array.from({ length: 4 }, async (_, i) => {
+      const relativePath = `public/assets/images/card-${i}.png`;
+      await writeFile(join(fixture.root, relativePath), IMAGE);
+      return { ...fixture.asset, id: `face-${i}`, relativePath, metadata: { role: 'card-face', subjectId: `card-${i}` } };
+    }));
+    await writeFile(join(fixture.root, 'scripts/main.gd'), faces.map(face => `preload("res://${face.relativePath}")`).join('\n'));
+    await expect(verifyVisualAssetCoverage({ name: 'Cards', idea: 'card game', engine: 'godot', root: fixture.root, assets: faces }))
+      .resolves.toMatchObject({ ok: false, reason: 'duplicate-card-art' });
+    // Forged public hashes must not bypass the content identity check.
+    await expect(verifyVisualAssetCoverage({ name: 'Cards', idea: 'card game', engine: 'godot', root: fixture.root,
+      assets: faces.map((face, i) => ({ ...face, sha256: String(i).repeat(64) })) }))
+      .resolves.toMatchObject({ ok: false, reason: 'invalid-card-content' });
+  });
+
+  it('rejects atlas subjects that outnumber its addressable cells', async () => {
+    const fixture = await makeFixture();
+    await writeFile(join(fixture.root, 'scripts/main.gd'), 'preload("res://public/assets/images/cards.png")');
+    await expect(verifyVisualAssetCoverage({ name: 'Cards', idea: 'card game', engine: 'godot', root: fixture.root,
+      assets: [{ ...fixture.asset, metadata: { role: 'card-art-atlas', columns: 2, rows: 2, subjects: 'a,b,c,d,e' } }] }))
+      .resolves.toMatchObject({ ok: false, reason: 'insufficient-card-coverage' });
+  });
   it('does not let a generic background satisfy a card-game core-art gate', async () => {
     const fixture = await makeFixture();
     await expect(verifyVisualAssetCoverage({

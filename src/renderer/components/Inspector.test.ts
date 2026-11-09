@@ -29,6 +29,28 @@ const report: GameplayExperienceReport = {
 };
 
 describe('ExperienceReport', () => {
+  it('shows an unexecuted playtest as blocked without a misleading zero score', () => {
+    const blockedReport: GameplayExperienceReport = {
+      ...report, verdict: 'repair', score: 0,
+      checks: [
+        { id: 'load', label: '加载与启动', status: 'repair', message: '正式构建未通过' },
+        { id: 'input-response', label: '操作反馈', status: 'skipped', message: '未执行' },
+      ],
+    };
+    const trigger = renderToStaticMarkup(createElement(ExperienceReportTrigger, {
+      report: blockedReport, projectStatus: 'failed', evaluating: false, expanded: false, onToggle: vi.fn(),
+    }));
+    expect(trigger).toContain('BLOCKED');
+    expect(trigger).toContain('试玩未执行');
+    expect(trigger).not.toContain('<strong>0</strong>');
+    const drawer = renderToStaticMarkup(createElement(ExperienceReport, {
+      report: blockedReport, projectStatus: 'failed', evaluating: false, disabled: false,
+      onClose: vi.fn(), onEvaluate: vi.fn(), onCancel: vi.fn(), onOpenReport: vi.fn(),
+    }));
+    expect(drawer).toContain('BLOCKED');
+    expect(drawer).not.toContain('class="experience-score"');
+  });
+
   it('keeps the collapsed score summary in the preview toolbar', () => {
     const markup = renderToStaticMarkup(createElement(ExperienceReportTrigger, {
       report,

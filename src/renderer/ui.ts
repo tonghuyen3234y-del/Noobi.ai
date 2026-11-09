@@ -29,11 +29,16 @@ export const EVENT_KIND_LABELS: Record<AgentEventKind, string> = {
 /**
  * Human label for the active runtime card.
  *
- * An API-key engine reports `type: 'api-key'` and has no email, so calling it a
- * Codex account would be a lie; only Codex gets the login wording.
+ * An API-key engine (Qwen) reports no account object at all, so the label has
+ * to be told which provider is active; inferring it from the account made Qwen
+ * look like an unauthenticated Codex.
  */
-export function runtimeLabel(runtime: RuntimeStatus): string {
-  const isApiKey = runtime.account?.type === 'api-key';
+export function runtimeLabel(
+  runtime: RuntimeStatus,
+  provider?: { requiresImageApi?: boolean } | null,
+): string {
+  const isApiKey = provider?.requiresImageApi === true
+    || runtime.account?.type === 'api-key';
   const name = isApiKey ? 'Qwen（百炼）' : 'Codex';
   if (runtime.state === 'ready') {
     if (isApiKey) return `${name} 已就绪`;

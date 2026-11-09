@@ -588,6 +588,8 @@ export interface ProvidersSnapshot {
 }
 
 export interface ApiKeySaveResult {
+  /** Auto-provisioned image service status; present only for Qwen. */
+  imageService?: { configured: boolean; message: string };
   /** Credential presence after the save; never key material. */
   credentials: ProviderCredentialStatus[];
   /** The rebuilt engine's status, so the settings card updates without a restart. */

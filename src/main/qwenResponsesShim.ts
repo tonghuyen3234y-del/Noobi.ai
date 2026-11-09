@@ -28,6 +28,8 @@ export interface ShimOptions {
   debug?: boolean;
   /** Test hook: overrides global fetch. */
   fetchImpl?: typeof fetch;
+  /** Bound stalled upstream requests, including reading their response body. */
+  requestTimeoutMs?: number;
 }
 
 export interface RunningShim {
@@ -71,15 +73,24 @@ export async function startQwenResponsesShim(options: ShimOptions): Promise<Runn
   let sequence = 0;
 
   const server = createServer((req, res) => {
-    void handle(req, res).catch((error: unknown) => {
-      if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: asMessage(error) } }));
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new DOMException('百炼请求超时，请重试。', 'TimeoutError')), options.requestTimeoutMs ?? 120_000);
+    const cancel = (): void => { if (!res.writableEnded) controller.abort(); };
+    res.once('close', cancel);
+    void handle(req, res, controller.signal).catch((error: unknown) => {
+      if (res.destroyed) return;
+      const reason: unknown = controller.signal.aborted ? controller.signal.reason : error;
+      const status = reason instanceof Error && reason.name === 'TimeoutError' ? 504
+        : reason instanceof ShimTranslationError ? 502 : 500;
+      if (!res.headersSent) res.writeHead(status, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: asMessage(reason) } }));
+    }).finally(() => { clearTimeout(timer); res.removeListener('close', cancel); });
   });
 
   async function handle(
     req: import('node:http').IncomingMessage,
     res: import('node:http').ServerResponse,
+    signal: AbortSignal,
   ): Promise<void> {
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
@@ -91,6 +102,7 @@ export async function startQwenResponsesShim(options: ShimOptions): Promise<Runn
       const upstreamResponse = await doFetch(`${upstream}${req.url ?? '/'}`, {
         method: req.method ?? 'GET',
         headers: { 'content-type': 'application/json', authorization },
+        signal,
         ...(raw ? { body: raw } : {}),
       });
       res.writeHead(upstreamResponse.status, { 'content-type': 'application/json' });
@@ -132,6 +144,7 @@ export async function startQwenResponsesShim(options: ShimOptions): Promise<Runn
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization },
       body: JSON.stringify(payload),
+      signal,
     });
     const text = await upstreamResponse.text();
     if (!upstreamResponse.ok) {
@@ -150,7 +163,7 @@ export async function startQwenResponsesShim(options: ShimOptions): Promise<Runn
       return;
     }
 
-    const response = toResponsesObject(chat, model, () => (sequence += 1));
+    const response = toResponsesObject(chat, model, () => (sequence += 1), body.tools);
     if (body.stream) {
       res.writeHead(200, {
         'content-type': 'text/event-stream',
@@ -207,20 +220,25 @@ export function toChatMessages(body: Body): ChatMessage[] {
         }
         break;
       }
-      case 'function_call':
-        messages.push({
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: readString(record.call_id) ?? readString(record.id) ?? 'call_0',
-            type: 'function',
-            function: {
-              name: readString(record.name) ?? '',
-              arguments: readString(record.arguments) ?? '{}',
-            },
-          }],
-        });
+      case 'custom_tool_call':
+      case 'function_call': {
+        const call: NonNullable<ChatMessage['tool_calls']>[number] = {
+          id: readString(record.call_id) ?? readString(record.id) ?? 'call_0',
+          type: 'function',
+          function: {
+            name: readString(record.name) ?? '',
+            arguments: record.type === 'custom_tool_call'
+              ? JSON.stringify({ input: readString(record.input) ?? '' })
+              : readString(record.arguments) ?? '{}',
+          },
+        };
+        // Parallel calls belong to a single assistant turn before their results.
+        const previous = messages.at(-1);
+        if (previous?.role === 'assistant' && previous.tool_calls) previous.tool_calls.push(call);
+        else messages.push({ role: 'assistant', content: null, tool_calls: [call] });
         break;
+      }
+      case 'custom_tool_call_output':
       case 'function_call_output':
         messages.push({
           role: 'tool',
@@ -242,15 +260,19 @@ export function toChatTools(tools: unknown): unknown[] | null {
   if (!Array.isArray(tools)) return null;
   const converted = tools.flatMap((tool) => {
     const record = asRecord(tool);
-    if (!record || record.type !== 'function') return [];
+    if (!record || (record.type !== 'function' && record.type !== 'custom')) return [];
     const name = readString(record.name);
     if (!name) return [];
     return [{
       type: 'function',
       function: {
         name,
-        description: readString(record.description) ?? '',
-        parameters: record.parameters ?? { type: 'object', properties: {} },
+        description: (readString(record.description) ?? '') + (record.type === 'custom'
+          ? '\nPass the complete raw tool text in the input string, preserving newlines. Do not pass a shell command or a promise to execute it.'
+            + (name === 'apply_patch' ? '\nUse the patch format: *** Begin Patch\\n*** Add File: relative/path\\n+file contents\\n*** End Patch. For existing files use *** Update File: relative/path with @@ context and +/- lines; for removal use *** Delete File: relative/path.' : '') : ''),
+        parameters: record.type === 'custom' ? {
+          type: 'object', properties: { input: { type: 'string' } }, required: ['input'], additionalProperties: false,
+        } : record.parameters ?? { type: 'object', properties: {} },
       },
     }];
   });
@@ -262,6 +284,7 @@ export function toResponsesObject(
   chat: ChatResult,
   model: string,
   nextSequence: () => number,
+  tools?: unknown,
 ): Record<string, unknown> {
   const message = chat.choices?.[0]?.message ?? { role: 'assistant', content: null };
   const output: Array<Record<string, unknown>> = [];
@@ -276,6 +299,21 @@ export function toResponsesObject(
     });
   }
   for (const call of message.tool_calls ?? []) {
+    const isCustom = Array.isArray(tools) && tools.some((tool) => {
+      const record = asRecord(tool);
+      return record?.type === 'custom' && record.name === call.function.name;
+    });
+    if (isCustom) {
+      let args: Record<string, unknown> | null;
+      try { args = asRecord(JSON.parse(call.function.arguments)); }
+      catch { throw new ShimTranslationError(`shim: invalid custom tool arguments for ${call.function.name}`); }
+      if (!args || typeof args.input !== 'string' || Object.keys(args).some((key) => key !== 'input')) {
+        throw new ShimTranslationError(`shim: custom tool ${call.function.name} requires a single input string`);
+      }
+      output.push({ type: 'custom_tool_call', id: `ctc_${nextSequence()}`, call_id: call.id,
+        name: call.function.name, input: args.input, status: 'completed' });
+      continue;
+    }
     output.push({
       type: 'function_call',
       id: `fc_${nextSequence()}`,
@@ -336,6 +374,9 @@ export function toSseStream(response: Record<string, unknown>): string {
           delta: String(part.text ?? ''),
         });
       }
+    } else if (item.type === 'custom_tool_call') {
+      push('response.custom_tool_call_input.delta', { item_id: item.id, output_index: index, delta: item.input });
+      push('response.custom_tool_call_input.done', { item_id: item.id, output_index: index, input: item.input });
     }
     push('response.output_item.done', { output_index: index, item });
   });
@@ -343,6 +384,8 @@ export function toSseStream(response: Record<string, unknown>): string {
   push('response.completed', { response });
   return events.join('');
 }
+
+class ShimTranslationError extends Error {}
 
 function collectText(content: unknown): string {
   if (typeof content === 'string') return content;

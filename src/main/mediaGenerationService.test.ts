@@ -15,6 +15,23 @@ afterEach(async () => {
 });
 
 describe('media generation service', () => {
+  it('adapts small Wan 2.1 sprites to valid source dimensions and preserves ratio', async () => {
+    const { root, providerStore } = await configuredStore({ presetId: 'dashscope-image', apiKey: 'test-wan-key' });
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ parameters: { size: '512*768' } });
+      // Stop before async synthesis: this test is about the actual outbound
+      // request and must not contact a provider or create a fake asset.
+      return new Response('', { status: 503 });
+    });
+    const service = new MediaGenerationService({ providerStore, assetStore: new AssetStore(), fetch: fetchMock as typeof fetch });
+    await expect(service.generate({ project: { id: 'wan-sprite', root }, kind: 'image', name: 'sprite', prompt: 'A basket',
+      model: 'wanx2.1-t2i-turbo', options: { width: 256, height: 384 } })).rejects.toThrow('HTTP 503');
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockClear();
+    await expect(service.generate({ project: { id: 'wan-sprite', root }, kind: 'image', name: 'sprite', prompt: 'A basket',
+      model: 'wanx2.1-t2i-turbo', options: { width: 256, height: 2048 } })).rejects.toThrow('compatible aspect ratio');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
   it('represents safe image and audio fallbacks when no API provider is configured', async () => {
     const providerStore = {
       withActiveProvider: vi.fn(async () => null),

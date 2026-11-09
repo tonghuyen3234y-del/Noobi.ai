@@ -91,7 +91,7 @@ describe('createWorkspaceTemplate', () => {
 
     const agents = await readFile(join(root, 'AGENTS.md'), 'utf8');
     expect(agents).toContain('noobi_image_generate');
-    expect(agents).toContain('host-trusted generated image is required for every Noobi.ai game');
+    expect(agents).toContain('host-trusted generated image is required for every XiuPlay.ai game');
     expect(agents).toContain('Codex ImageGen fallback');
     expect(agents).toContain('visibly loaded by the running game');
     expect(agents).toContain('core visual asset coverage table');
@@ -189,12 +189,12 @@ describe('createWorkspaceTemplate', () => {
     expect(design).toContain('`artifacts/playtest/latest/report.json` passes every declared step');
 
     const readme = await readFile(join(root, 'README.md'), 'utf8');
-    expect(readme).toContain('Every Noobi.ai run includes an animation needs assessment');
+    expect(readme).toContain('Every XiuPlay.ai run includes an animation needs assessment');
     expect(readme).toContain('verify and reuse the existing frame set/sprite sheet');
     expect(readme).toContain('Actual rigged 3D characters use real GLB animation clips');
     expect(readme).toContain('This project targets **120 FPS**');
     expect(readme).toContain('executable experience route in `.noobi/playtest.json`');
-    expect(readme).toContain('Noobi.ai owns the resulting `artifacts/playtest/latest/report.json`');
+    expect(readme).toContain('XiuPlay.ai owns the resulting `artifacts/playtest/latest/report.json`');
 
     const metadata = JSON.parse(
       await readFile(join(root, '.noobi/project.json'), 'utf8'),

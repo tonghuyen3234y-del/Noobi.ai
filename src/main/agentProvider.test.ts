@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   AGENT_PROVIDERS,
@@ -110,6 +111,40 @@ describe('provider readiness', () => {
 });
 
 describe('runtime holder', () => {
+  it('moves host events to the selected provider without duplicate or stale notifications', () => {
+    const first = new EventEmitter() as AgentRuntime;
+    const second = new EventEmitter() as AgentRuntime;
+    const holder = createRuntimeHolder(first);
+    const switching = holder.switching();
+    const notification = vi.fn();
+    const request = vi.fn();
+    const status = vi.fn();
+    switching.on('notification', notification);
+    switching.on('serverRequest', request);
+    switching.once('status', status);
+
+    holder.replace(second);
+    holder.replace(second);
+    first.emit('notification', { method: 'stale' });
+    first.emit('serverRequest', { id: 1, method: 'stale' });
+    second.emit('notification', { method: 'item/started' });
+    second.emit('serverRequest', { id: 2, method: 'item/tool/call' });
+    second.emit('status', { state: 'ready' });
+    second.emit('status', { state: 'stopped' });
+
+    expect(notification).toHaveBeenCalledExactlyOnceWith({ method: 'item/started' });
+    expect(request).toHaveBeenCalledExactlyOnceWith({ id: 2, method: 'item/tool/call' });
+    expect(status).toHaveBeenCalledOnce();
+    expect(first.listenerCount('serverRequest')).toBe(0);
+    expect(second.listenerCount('serverRequest')).toBe(1);
+
+    switching.removeListener('notification', notification);
+    holder.replace(first);
+    first.emit('notification', { method: 'unsubscribed' });
+    expect(notification).toHaveBeenCalledOnce();
+    expect(second.listenerCount('serverRequest')).toBe(0);
+  });
+
   function fakeRuntime(name: string): AgentRuntime {
     return {
       name,

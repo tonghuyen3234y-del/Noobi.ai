@@ -1,4 +1,5 @@
-import type { AgentRuntime } from './agentRuntime.js';
+import { EventEmitter } from 'node:events';
+import type { AgentRuntime, AgentRuntimeEvents } from './agentRuntime.js';
 
 /**
  * Runtime selection.
@@ -125,9 +126,34 @@ export function createRuntimeHolder(initial: AgentRuntime): RuntimeHolder & {
 } {
   let current = initial;
   const target = (): AgentRuntime => current;
+  const events = new EventEmitter();
+  let stopRelaying: (() => void) | undefined;
+
+  function relayEvents(): void {
+    stopRelaying?.();
+    const source = current;
+    const removers: Array<() => void> = [];
+    for (const event of ['status', 'notification', 'serverRequest', 'diagnostic'] as const) {
+      const forward = (...args: unknown[]) => {
+        if (source === current) events.emit(event, ...args);
+      };
+      source.on(event, forward as AgentRuntimeEvents[typeof event]);
+      removers.push(() => source.removeListener(event, forward as AgentRuntimeEvents[typeof event]));
+    }
+    stopRelaying = () => removers.forEach((remove) => remove());
+  }
 
   const proxy = new Proxy({} as AgentRuntime, {
     get(_target, property) {
+      // Event subscriptions must follow provider changes just like method calls.
+      // A normal bound `on` would leave the host listening to the previous engine.
+      if (property === 'on' || property === 'once' || property === 'removeListener') {
+        return (event: string, listener: (...args: unknown[]) => void) => {
+          if (!stopRelaying) relayEvents();
+          events[property](event, listener);
+          return proxy;
+        };
+      }
       const active = target() as unknown as Record<PropertyKey, unknown>;
       const value = active[property];
       // Bind methods to the live runtime so `this` is always correct after a swap.
@@ -147,7 +173,9 @@ export function createRuntimeHolder(initial: AgentRuntime): RuntimeHolder & {
       return current;
     },
     replace(runtime: AgentRuntime) {
+      if (runtime === current) return;
       current = runtime;
+      if (stopRelaying) relayEvents();
     },
     switching() {
       return proxy;

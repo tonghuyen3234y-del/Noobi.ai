@@ -13,6 +13,7 @@ interface PendingApproval {
   request: JsonRpcServerRequest;
   approval: ApprovalRequest;
   timer: NodeJS.Timeout;
+  respond: AgentRuntime['respondToServerRequest'];
 }
 
 const APPROVAL_TIMEOUT_MS = 2 * 60 * 1_000;
@@ -44,7 +45,7 @@ export class ApprovalBroker extends EventEmitter {
         this.#runtime.rejectServerRequest(
           request.id,
           -32601,
-          `Noobi.ai does not support ${request.method}`,
+          `XiuPlay.ai does not support ${request.method}`,
         );
       }
       this.emit('diagnostic', `Unsupported Codex request was denied: ${request.method}`);
@@ -66,7 +67,10 @@ export class ApprovalBroker extends EventEmitter {
     };
     const timer = setTimeout(() => this.#expire(token), APPROVAL_TIMEOUT_MS);
     timer.unref();
-    this.#pending.set(token, { request, approval, timer });
+    this.#pending.set(token, {
+      request, approval, timer,
+      respond: this.#runtime.respondToServerRequest.bind(this.#runtime),
+    });
     this.#tokenForRequest.set(request.id, token);
     this.emit('approval', structuredClone(approval));
   }
@@ -77,7 +81,7 @@ export class ApprovalBroker extends EventEmitter {
     const response = approvalResponse(current.request, decision, answers);
     const pending = this.#take(token)!;
     try {
-      this.#runtime.respondToServerRequest(pending.request.id, response);
+      pending.respond(pending.request.id, response);
     } finally {
       this.emit('closed', token);
     }
@@ -93,7 +97,7 @@ export class ApprovalBroker extends EventEmitter {
       const pending = this.#take(token);
       if (!pending) continue;
       try {
-        this.#runtime.respondToServerRequest(
+        pending.respond(
           pending.request.id,
           approvalResponse(pending.request, 'decline'),
         );
@@ -116,7 +120,7 @@ export class ApprovalBroker extends EventEmitter {
     const pending = this.#take(token);
     if (!pending) return;
     try {
-      this.#runtime.respondToServerRequest(
+      pending.respond(
         pending.request.id,
         approvalResponse(pending.request, 'decline'),
       );

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { verifyWebProductionBuild } from './webProductionBuild.js';
+import { fingerprintWebDeliveryWorkspace, verifyWebProductionBuild } from './webProductionBuild.js';
 
 const roots: string[] = [];
 
@@ -11,6 +11,21 @@ afterEach(async () => {
 });
 
 describe('verifyWebProductionBuild', () => {
+  it('detects delivery changes while ignoring generated reports and log noise', async () => {
+    const root = await fixture();
+    await writeFile(join(root, 'src/main.js'), 'const a = 1;');
+    const original = await fingerprintWebDeliveryWorkspace(root);
+    await mkdir(join(root, 'artifacts'), { recursive: true });
+    await writeFile(join(root, 'artifacts/report.json'), 'a new failed report');
+    expect(await fingerprintWebDeliveryWorkspace(root)).toBe(original);
+    await writeFile(join(root, 'src/main.js'), 'const a = 2;');
+    const changed = await fingerprintWebDeliveryWorkspace(root);
+    expect(changed).not.toBe(original);
+    await mkdir(join(root, '.noobi'), { recursive: true });
+    await writeFile(join(root, '.noobi/playtest.json'), '{"schemaVersion":1}');
+    expect(await fingerprintWebDeliveryWorkspace(root)).not.toBe(changed);
+  });
+
   it('accepts a complete, current production build with local or embedded resources', async () => {
     const root = await fixture();
     await writeFile(join(root, 'dist/index.html'), [

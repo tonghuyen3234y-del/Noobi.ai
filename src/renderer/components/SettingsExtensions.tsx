@@ -159,6 +159,17 @@ interface ProviderPreset {
 
 const PROVIDERS: Record<MediaCapability, ProviderPreset[]> = {
   image: [
+    // First entry is what a Qwen user should see: one key covers art too.
+    {
+      id: 'dashscope-image',
+      label: 'Qwen-Image（百炼）',
+      endpoint: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/text2image/image-synthesis',
+      models: [
+        { id: 'wanx2.1-t2i-turbo', label: 'Wanx 2.1 Turbo' },
+        { id: 'wanx2.1-t2i-plus', label: 'Wanx 2.1 Plus' },
+        { id: 'wanx-v1', label: 'Wanx v1' },
+      ],
+    },
     {
       id: 'openai-image',
       label: 'OpenAI Images',

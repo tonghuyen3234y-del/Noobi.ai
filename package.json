@@ -39,6 +39,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "protocol:generate": "tsx scripts/generate-codex-protocol.ts",
+    "smoke:qwen": "tsx scripts/qwen-protocol-smoke.ts",
     "smoke:codex": "tsx scripts/codex-smoke.ts",
     "probe:deepseek": "tsx scripts/deepseek-probe.ts",
     "smoke:harness": "tsx scripts/harness-smoke.ts",
@@ -82,8 +83,8 @@
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "ai.noobi.desktop",
-    "productName": "Noobi.ai",
+    "appId": "ai.xiuplay.desktop",
+    "productName": "XiuPlay.ai",
     "asar": true,
     "asarUnpack": [
       "node_modules/@openai/codex-*/vendor/**/*"

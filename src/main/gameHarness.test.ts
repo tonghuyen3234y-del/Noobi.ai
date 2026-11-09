@@ -45,7 +45,11 @@ class CapturingRuntime extends EventEmitter {
     return `thread-${this.#thread}`;
   }
 
-  async resumeThread(threadId: string, _options: StartThreadOptions): Promise<string> {
+  readonly resumes: StartThreadOptions[] = [];
+
+  async resumeThread(threadId: string, options: StartThreadOptions): Promise<string> {
+    // Recorded so a test can assert media tools survive a resume.
+    this.resumes.push(structuredClone(options));
     return threadId;
   }
 
@@ -82,7 +86,62 @@ class CapturingRuntime extends EventEmitter {
   async stop(): Promise<void> {}
 }
 
+describe('harness toolset versioning', () => {
+  it('rejects a thread persisted under an older toolset', () => {
+    // Version 8 threads were resumed without dynamic media tools, so their
+    // Implementer could never produce the required image attestation.
+    expect(reusableImplementerThreadId('thread-old', 8)).toBeNull();
+    expect(reusableImplementerThreadId('thread-new', GAME_HARNESS_TOOLSET_VERSION))
+      .toBe('thread-new');
+  });
+});
+
 describe('game harness required ImageGen contract', () => {
+  it('stops a repair that changes no delivery files instead of burning the remaining repair budget', async () => {
+    const runtime = new CapturingRuntime([
+      'Plan.', 'Implementation.',
+      JSON.stringify({ verdict: 'repair', summary: 'Build missing.', findings: ['Build dist.'] }),
+      'I will build the project now.',
+    ]);
+    const harness = new GameHarness(runtime as unknown as CodexAppServer);
+    const methods: string[] = [];
+    harness.on('event', (event: { method?: string }) => { if (event.method) methods.push(event.method); });
+    await expect(harness.run({
+      projectId: 'no-progress', cwd: '/tmp/no-progress', prompt: 'Finish the game.',
+      imageGenerationSkill: { name: 'imagegen', path: '/tmp/imagegen/SKILL.md' },
+      captureDeliveryRevision: async () => 'sha256:unchanged',
+      validateHostDelivery: async () => ({ ok: false, findings: ['WEB_BUILD: Missing dist.'] }),
+    })).rejects.toThrow('NO_VERIFIED_CHANGE');
+    expect(runtime.turns).toHaveLength(4);
+    expect(methods.filter((method) => method === 'harness/repair/attempt-started')).toHaveLength(1);
+    expect(methods).toContain('harness/repair/no-progress');
+    expect(methods).not.toContain('harness/run/delivery-verified');
+  });
+
+  it('rechecks repaired Reviewer claims even while the host build gate is failing', async () => {
+    const runtime = new CapturingRuntime([
+      'Plan.', 'Implementation.',
+      JSON.stringify({ verdict: 'repair', summary: 'Image missing.', findings: ['Image is missing.'] }),
+      'Added the image.',
+      JSON.stringify({ verdict: 'pass', summary: 'Image now exists.', findings: [] }),
+      'Built dist.',
+      JSON.stringify({ verdict: 'pass', summary: 'Everything is current.', findings: [] }),
+    ]);
+    let calls = 0;
+    const harness = new GameHarness(runtime as unknown as CodexAppServer);
+    const result = await harness.run({
+      projectId: 'fresh-findings', cwd: '/tmp/fresh-findings', prompt: 'Finish the game.',
+      imageGenerationSkill: { name: 'imagegen', path: '/tmp/imagegen/SKILL.md' },
+      validateHostDelivery: async () => ++calls === 1
+        ? { ok: false, findings: ['WEB_BUILD: Missing dist.'] }
+        : { ok: true, findings: [] },
+    });
+    expect(result.review.verdict).toBe('pass');
+    expect(runtime.turns[5]?.prompt).toContain('WEB_BUILD: Missing dist.');
+    expect(runtime.turns[5]?.prompt).not.toContain('Image is missing.');
+    expect(runtime.turns[5]?.prompt).not.toContain('REVIEWER_RECHECK: REVIEWER_RECHECK:');
+  });
+
   it('injects the required ImageGen contract into planning, implementation, review, repair, and re-review', async () => {
     const runtime = new CapturingRuntime([
       'Plan the game.',
@@ -303,6 +362,7 @@ describe('game harness required ImageGen contract', () => {
       'Initial implementation.',
       JSON.stringify({ verdict: 'repair', summary: 'Controls need work.', findings: ['Fix the pause control.'] }),
       'Repair attempt 1.',
+      JSON.stringify({ verdict: 'repair', summary: 'Pause still needs work.', findings: ['Fix the pause control.'] }),
       'Repair attempt 2.',
       JSON.stringify({ verdict: 'pass', summary: 'Reviewer verified both repairs.', findings: [] }),
     ]);
@@ -324,10 +384,10 @@ describe('game harness required ImageGen contract', () => {
 
     expect(result).toMatchObject({ repaired: true, repairAttempts: 2, review: { verdict: 'pass' } });
     expect(hostChecks).toBe(2);
-    expect(runtime.turns).toHaveLength(6);
-    expect(runtime.turns[4]?.prompt).toContain('<mixed_repair_findings>');
-    expect(runtime.turns[4]?.prompt).toContain('REVIEWER_RECHECK: Fix the pause control.');
-    expect(runtime.turns[4]?.prompt).toContain('AUTHORITATIVE_HOST: Pause probe still changes while paused.');
+    expect(runtime.turns).toHaveLength(7);
+    expect(runtime.turns[5]?.prompt).toContain('<mixed_repair_findings>');
+    expect(runtime.turns[5]?.prompt).toContain('REVIEWER_RECHECK: Fix the pause control.');
+    expect(runtime.turns[5]?.prompt).toContain('AUTHORITATIVE_HOST: Pause probe still changes while paused.');
   });
 
   it('aborts an active host playtest when the user stops the harness', async () => {

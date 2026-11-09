@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -17,6 +18,8 @@ import {
 } from './mediaGenerationService.js';
 import { MEDIA_PROVIDER_PRESETS } from './mediaProviderStore.js';
 import type { AssetPlanRecord, GameAssetRecord } from '../shared/contracts.js';
+import { createRuntimeHolder } from './agentProvider.js';
+import type { AgentRuntime } from './agentRuntime.js';
 
 const roots: string[] = [];
 
@@ -25,6 +28,38 @@ afterEach(async () => {
 });
 
 describe('media tool broker', () => {
+  it('handles image calls from the selected provider and keeps async replies on their source', async () => {
+    const first = Object.assign(new EventEmitter(), { respondToServerRequest: vi.fn() }) as unknown as AgentRuntime;
+    const qwen = Object.assign(new EventEmitter(), { respondToServerRequest: vi.fn() }) as unknown as AgentRuntime;
+    const holder = createRuntimeHolder(first);
+    const runtime = holder.switching();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const asset = fakeAsset(1);
+    const generationService = {
+      generate: vi.fn(async () => {
+        await pending;
+        return { outcome: 'asset' as const, asset, provider: { id: 'bailian', presetId: 'dashscope-image', displayName: 'Bailian', model: 'wanx2.1-t2i-turbo' } };
+      }),
+    };
+    const broker = new MediaToolBroker({
+      server: runtime,
+      generationService,
+      assetStore: { list: async () => [asset] } as unknown as AssetStore,
+      resolveProject: async () => ({ id: 'project-1', root: '/private/workspace' }),
+    });
+    runtime.on('serverRequest', (request) => { broker.handle(request); });
+    holder.replace(qwen);
+    qwen.emit('serverRequest', toolRequest(77, 'noobi_image_generate', {
+      name: 'pong-scene', prompt: 'A Pong game scene', width: 960, height: 540,
+    }));
+    await vi.waitFor(() => expect(generationService.generate).toHaveBeenCalledOnce());
+    holder.replace(first);
+    release();
+    await vi.waitFor(() => expect(qwen.respondToServerRequest).toHaveBeenCalledWith(77, expect.objectContaining({ success: true })));
+    expect(first.respondToServerRequest).not.toHaveBeenCalled();
+  });
+
   it('publishes bounded top-level asset and generation function tools', () => {
     expect(MEDIA_DYNAMIC_TOOLS.map((tool) => tool.type)).toEqual(Array(7).fill('function'));
     expect(MEDIA_DYNAMIC_TOOLS.map((tool) => tool.name)).toEqual([

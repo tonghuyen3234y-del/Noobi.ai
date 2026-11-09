@@ -1,3 +1,4 @@
+import xiuplayLogo from '../assets/xiuplay-logo-128.png';
 import {
   FolderKanban,
   Gauge,
@@ -28,6 +29,8 @@ interface ProjectRailProps {
   projects: readonly ProjectRecord[];
   selectedId?: string;
   runtime: RuntimeStatus;
+  /** Active agent provider, used to label the runtime correctly for Qwen. */
+  activeProvider?: { requiresImageApi?: boolean } | null;
   open: boolean;
   collapsed: boolean;
   variant: 'dashboard' | 'workbench';
@@ -81,6 +84,7 @@ export function ProjectRail({
   onDelete,
   onCreate,
   onSettings,
+  activeProvider,
 }: ProjectRailProps) {
   const [menu, setMenu] = useState<ProjectMenuState | null>(null);
   const firstMenuItemRef = useRef<HTMLButtonElement>(null);
@@ -148,10 +152,10 @@ export function ProjectRail({
                 <PanelLeftOpen className="brand-toggle-icon" size={19} aria-hidden="true" />
               </button>
             ) : (
-              <div className="brand is-static" aria-label="Noobi.ai">
-                <span className="brand-monogram" aria-hidden="true">N</span>
+              <div className="brand is-static" aria-label="XiuPlay.ai">
+                <img className="brand-logo" src={xiuplayLogo} alt="" aria-hidden="true" draggable={false} />
                 <span className="brand-copy">
-                  <strong>Noobi.ai</strong>
+                  <strong>XiuPlay.ai</strong>
                   <small>AI GAME STUDIO</small>
                 </span>
               </div>
@@ -164,9 +168,11 @@ export function ProjectRail({
               title={collapsed ? '展开首页侧栏' : '返回首页'}
               onClick={collapsed ? onToggleCollapse : onHome}
             >
-              {collapsed ? <span className="brand-monogram" aria-hidden="true">N</span> : null}
+              {collapsed
+                ? <img className="brand-logo is-compact" src={xiuplayLogo} alt="" aria-hidden="true" draggable={false} />
+                : null}
               <span className="brand-copy">
-                <strong>Noobi.ai</strong>
+                <strong>XiuPlay.ai</strong>
                 <small>AI GAME STUDIO</small>
               </span>
             </button>
@@ -287,12 +293,12 @@ export function ProjectRail({
           <button
             type="button"
             className="runtime-mini"
-            title={runtimeLabel(runtime)}
+            title={runtimeLabel(runtime, activeProvider)}
             onClick={() => onSettings(runtime.account ? 'environment' : 'account')}
           >
             <Gauge size={15} />
             <span>
-              <strong>{runtimeLabel(runtime)}</strong>
+              <strong>{runtimeLabel(runtime, activeProvider)}</strong>
               <small>{runtime.version ?? 'RUNTIME STATUS'}</small>
             </span>
             <i className={`runtime-dot state-${runtime.state}`} />

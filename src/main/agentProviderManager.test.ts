@@ -8,6 +8,7 @@ import {
   toChatMessages,
   toChatTools,
   toResponsesObject,
+  toSseStream,
 } from './qwenResponsesShim.js';
 
 function fakeCredentials(keys: Partial<Record<AgentProviderId, string>> = {}) {
@@ -106,6 +107,52 @@ describe('AgentProviderManager', () => {
 });
 
 describe('Qwen protocol shim', () => {
+  const patch = '*** Begin Patch\n*** Add File: demo.txt\n+hello\n*** End Patch';
+  const customTools = [{ type: 'custom', name: 'apply_patch', description: 'Apply a patch' }];
+
+  it('round trips freeform patches and parallel calls without losing newlines or tool results', () => {
+    expect(toChatTools(customTools)).toMatchObject([{ function: {
+      name: 'apply_patch', parameters: { required: ['input'], additionalProperties: false },
+    } }]);
+    const response = toResponsesObject({ choices: [{ message: {
+      role: 'assistant', content: null, tool_calls: [{ id: 'patch_1', type: 'function',
+        function: { name: 'apply_patch', arguments: JSON.stringify({ input: patch }) } }],
+    } }] }, 'qwen-plus', () => 1, customTools);
+    expect(response.output).toMatchObject([{ type: 'custom_tool_call', input: patch, call_id: 'patch_1' }]);
+    expect(toSseStream(response)).toContain('event: response.custom_tool_call_input.done');
+    const messages = toChatMessages({ input: [
+      ...(response.output as unknown[]),
+      { type: 'function_call', call_id: 'read_1', name: 'read_file', arguments: '{}' },
+      { type: 'custom_tool_call_output', call_id: 'patch_1', output: 'Success: demo.txt' },
+      { type: 'function_call_output', call_id: 'read_1', output: 'hello' },
+    ] });
+    expect(messages.map(m => m.role)).toEqual(['assistant', 'tool', 'tool']);
+    expect(messages[0]?.tool_calls).toHaveLength(2);
+    expect(JSON.parse(messages[0]!.tool_calls![0]!.function.arguments)).toEqual({ input: patch });
+    expect(messages[1]).toEqual({ role: 'tool', tool_call_id: 'patch_1', content: 'Success: demo.txt' });
+  });
+
+  it.each(['not JSON', '{"patch":"wrong field"}', '{"input":5}', '{"input":"ok","command":"ignored?"}'])(
+    'rejects malformed custom tool arguments: %s', (args) => {
+      expect(() => toResponsesObject({ choices: [{ message: { role: 'assistant', content: null,
+        tool_calls: [{ id: 'bad', type: 'function', function: { name: 'apply_patch', arguments: args } }],
+      } }] }, 'qwen-plus', () => 1, customTools)).toThrow(/custom tool/);
+    },
+  );
+
+  it('returns a bounded timeout instead of leaving a stalled provider request running', async () => {
+    let aborted = false;
+    const shim = await startQwenResponsesShim({ upstream: DASHSCOPE_BASE_URL, requestTimeoutMs: 30,
+      fetchImpl: (async (_url, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => { aborted = true; reject(init.signal?.reason); }, { once: true });
+      })) as typeof fetch,
+    });
+    live.push(shim);
+    const response = await fetch(`${shim.baseUrl}/responses`, { method: 'POST', body: JSON.stringify({ input: 'hi' }) });
+    expect(response.status).toBe(504);
+    expect(await response.text()).toContain('超时');
+    expect(aborted).toBe(true);
+  });
   it('converts a function_call_output into a tool message', () => {
     const messages = toChatMessages({
       instructions: 'be brief',

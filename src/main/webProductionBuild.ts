@@ -303,6 +303,33 @@ async function collectRelevantInputs(
   return scanTree(root, root, { mode: 'input', depth: 0, signal, budget });
 }
 
+/** Content identity for meaningful delivery changes, excluding logs and host evidence. */
+export async function fingerprintWebDeliveryWorkspace(
+  projectRoot: string,
+  options: WebProductionBuildOptions = {},
+): Promise<string> {
+  const root = await realpath(projectRoot);
+  const budget = new ScanBudget(resolveLimits(options.limits));
+  const files = await collectRelevantInputs(root, budget, options.signal);
+  const dist = resolve(root, 'dist');
+  const distInfo = await lstatOrNull(dist);
+  if (distInfo?.isSymbolicLink()) throw new Error('dist cannot be a symbolic link');
+  if (distInfo?.isDirectory()) {
+    files.push(...await scanTree(dist, root, { mode: 'output', depth: 0, budget, signal: options.signal }));
+  }
+  for (const name of ['GAME_DESIGN.md', '.noobi/playtest.json']) {
+    const path = resolve(root, name);
+    const info = await lstatOrNull(path);
+    if (!info) continue;
+    const canonical = await realpath(path);
+    assertWithin(root, canonical, '交付配置');
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Invalid delivery file: ${name}`);
+    budget.visitFile(name, Number(info.size), true);
+    files.push(fileStamp(root, path, Number(info.mtimeMs), Number(info.size)));
+  }
+  return fingerprintProductionFiles(files, options.signal);
+}
+
 async function scanTree(
   directory: string,
   projectRoot: string,

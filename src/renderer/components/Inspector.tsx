@@ -653,18 +653,24 @@ export function Inspector({
 function experienceReportPresentation(
   report: GameplayExperienceReport | null,
   projectStatus: ProjectStatus,
-): { historical: boolean; overallFailureAfterPassingPlaytest: boolean; title: string } {
+): { historical: boolean; overallFailureAfterPassingPlaytest: boolean; blocked: boolean; title: string } {
   const historical = projectStatus === 'running'
     || projectStatus === 'waiting'
     || projectStatus === 'stopped';
   const overallFailureAfterPassingPlaytest = projectStatus === 'failed'
     && report?.verdict === 'pass';
-  const title = overallFailureAfterPassingPlaytest
+  const blocked = report?.verdict === 'repair'
+    && report.checks.some((check) => check.id === 'load' && check.status === 'repair')
+    && report.checks.some((check) => check.id !== 'load')
+    && report.checks.filter((check) => check.id !== 'load').every((check) => check.status === 'skipped');
+  const title = blocked
+    ? '试玩未执行 · 构建或加载受阻'
+    : overallFailureAfterPassingPlaytest
     ? '试玩通过 · 项目仍需处理'
     : historical && report
       ? '上次体验评测'
       : '体验评测';
-  return { historical, overallFailureAfterPassingPlaytest, title };
+  return { historical, overallFailureAfterPassingPlaytest, blocked, title };
 }
 
 export function ExperienceReportTrigger({
@@ -680,11 +686,13 @@ export function ExperienceReportTrigger({
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const score = report ? Math.max(0, Math.min(100, Math.round(report.score))) : null;
-  const tone = evaluating ? 'running' : report?.verdict ?? 'waiting';
   const presentation = experienceReportPresentation(report, projectStatus);
+  const score = report && !presentation.blocked ? Math.max(0, Math.min(100, Math.round(report.score))) : null;
+  const tone = evaluating ? 'running' : presentation.blocked ? 'waiting' : report?.verdict ?? 'waiting';
   const status = evaluating
     ? 'RUNNING'
+    : presentation.blocked
+      ? 'BLOCKED'
     : report?.verdict === 'pass'
       ? 'PASS'
       : report?.verdict === 'repair'
@@ -731,10 +739,12 @@ export function ExperienceReport({
   onOpenReport: (relativePath: string) => void;
 }) {
   const presentation = experienceReportPresentation(report, projectStatus);
-  const score = report ? Math.max(0, Math.min(100, Math.round(report.score))) : null;
-  const tone = evaluating ? 'running' : report?.verdict ?? 'waiting';
+  const score = report && !presentation.blocked ? Math.max(0, Math.min(100, Math.round(report.score))) : null;
+  const tone = evaluating ? 'running' : presentation.blocked ? 'waiting' : report?.verdict ?? 'waiting';
   const status = evaluating
     ? 'RUNNING'
+    : presentation.blocked
+      ? 'BLOCKED'
     : report?.verdict === 'pass'
       ? 'PASS'
       : report?.verdict === 'repair'
@@ -786,7 +796,7 @@ export function ExperienceReport({
             <PlayCircle size={18} aria-hidden="true" />
             <div>
               <strong>正在自动试玩正式构建</strong>
-              <span>{report ? `上次结果 ${report.score}/100；本次完成前不沿用旧结论。` : '正在执行操作、动画、暂停与重开检查。'}</span>
+              <span>{presentation.blocked ? '上次试玩未执行；正在重新检查正式构建。' : report ? `上次结果 ${report.score}/100；本次完成前不沿用旧结论。` : '正在执行操作、动画、暂停与重开检查。'}</span>
             </div>
             <button type="button" className="experience-evaluate-button is-stop" onClick={onCancel}>
               <Square size={10} fill="currentColor" aria-hidden="true" /> 停止评测

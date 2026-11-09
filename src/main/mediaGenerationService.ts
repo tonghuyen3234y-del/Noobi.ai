@@ -505,6 +505,7 @@ function publicMediaRequestError(error: unknown): MediaGenerationPublicError {
     'MiniMax 请求失败',
     'Provider ',
     'Media provider ',
+    'Qwen-Image ',
     'Generated ',
     'Encoded media ',
   ];
@@ -633,8 +634,19 @@ function requestBody(
     case 'minimax-audio':
       return miniMaxRequestBody(kind, prompt, model, options);
     case 'dashscope-image': {
-      const width = typeof options.width === 'number' ? options.width : 1024;
-      const height = typeof options.height === 'number' ? options.height : 1024;
+      let width = typeof options.width === 'number' ? options.width : 1024;
+      let height = typeof options.height === 'number' ? options.height : 1024;
+      if (/^wanx?2\.1-t2i-(?:turbo|plus)$/u.test(model)) {
+        // Sprite display sizes can be smaller than the provider's source-image
+        // minimum. Scale both axes together; the game can display the result
+        // at its requested size without changing the artwork's proportions.
+        const scale = Math.max(1, 512 / Math.min(width, height));
+        width = Math.ceil(width * scale);
+        height = Math.ceil(height * scale);
+        if (width > 1440 || height > 1440) {
+          throw new MediaGenerationPublicError('Qwen-Image wanx2.1 requires each source-image dimension between 512 and 1440; choose a compatible aspect ratio and size.');
+        }
+      }
       // DashScope uses `WIDTH*HEIGHT`, not the `WxH` used elsewhere.
       return {
         model,

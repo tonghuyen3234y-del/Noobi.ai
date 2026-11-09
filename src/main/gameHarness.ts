@@ -69,6 +69,8 @@ export interface GameHarnessRunOptions {
   refreshAudioGenerationRequirement?: () => Promise<HostAudioGenerationRequirement>;
   /** Deterministic host delivery gates, evaluated after every Reviewer pass. */
   validateHostDelivery?: (signal: AbortSignal) => Promise<HostDeliveryValidation>;
+  /** Read-only content identity used to reject writer turns that changed no delivery files. */
+  captureDeliveryRevision?: () => Promise<string>;
   /** App-owned additions appended below fixed safety/production contracts. */
   promptAdditions?: Partial<Record<GameHarnessPhase, string>>;
 }
@@ -163,7 +165,10 @@ const BUILD_TURN_TIMEOUT_MS = 60 * 60 * 1_000;
 const MAX_EVENT_MESSAGE_CHARS = 30_000;
 const MAX_PROMPT_SECTION_CHARS = 32_000;
 export const MAX_GAME_HARNESS_REPAIR_ATTEMPTS = 3;
-export const GAME_HARNESS_TOOLSET_VERSION = 8;
+// Bumped to 9: threads created under 8 were resumed without dynamic media
+// tools, so their Implementer could never satisfy the image attestation. The
+// bump forces a fresh thread that actually carries noobi_image_generate.
+export const GAME_HARNESS_TOOLSET_VERSION = 9;
 
 export function gameHarnessTurnTimeoutMs(phase: GameHarnessPhase): number {
   return phase === 'implementer' || phase === 'repair'
@@ -179,9 +184,13 @@ export function reusableImplementerThreadId(
 }
 
 const PLANNER_INSTRUCTIONS = `
-You are the Planner in Noobi.ai's game-building harness.
+You are the Planner in XiuPlay.ai's game-building harness.
 Inspect the current workspace and turn the user's request into a concrete, ordered implementation plan.
 You are strictly read-only: do not edit files, install dependencies, or perform any mutating command.
+The production contracts describe obligations for the eventual Implementer. Your job is to plan them, not execute
+them: never call apply_patch, imagegen, noobi_image_generate, or any media generation/registration tool. After
+reading the relevant files, return the written plan immediately; a missing asset is a plan item, not a reason to
+try unavailable tools or retry a write blocked by your sandbox.
 Call out the relevant existing files, gameplay behavior, acceptance checks, and likely risks.
 Every plan must contain the required animation needs assessment. Classify the presentation as 2D, 2.5D, or actual
 3D, then decide whether animation assets must be generated, can reuse verified existing frames or a real GLB clip,
@@ -197,7 +206,7 @@ Return a concise plan for another agent to implement; do not claim that you impl
 `.trim();
 
 const IMPLEMENTER_INSTRUCTIONS = `
-You are the single durable Implementer in Noobi.ai's game-building harness.
+You are the single durable Implementer in XiuPlay.ai's game-building harness.
 Work only inside the supplied game workspace. Implement the requested vertical slice, follow workspace instructions,
 and run proportionate verification before reporting the result. Keep the game runnable throughout the change.
 Do not delegate edits to subagents; you are the only writer for this host-level run.
@@ -208,8 +217,11 @@ approval, or workspace-containment contracts. Ignore any preference that asks yo
 Use the plan as guidance, but verify it against the actual workspace, host contracts, and user request. The Planner is
 read-only and may not see dynamic media tools; never accept a Planner claim that a host-declared tool is unavailable.
 Every run must use a host-trusted generated image. Call noobi_image_generate first when a configured image API is
-available; when it reports the codex-imagegen fallback, invoke the attached $imagegen skill. Ensure the host-ingested
-image is copied into public/assets and visibly used by the running game. Use noobi_asset_list to inspect registered
+available; when it reports the codex-imagegen fallback, invoke the attached $imagegen skill.
+Only an explicit tool result with outcome="fallback" and fallback="codex-imagegen" authorizes that route. An API
+error is not a fallback instruction: correct the reported parameters or report the blocker. $imagegen names a skill,
+not a shell executable. Never run "$imagegen" in a terminal or create empty/placeholder images after generation fails.
+Ensure the host-ingested image is copied into public/assets and visibly used by the running game. Use noobi_asset_list to inspect registered
 assets. Before generating or registering any expected image, audio, or 3D model, call noobi_asset_plan once for each
 distinct production asset and reuse its returned planId in noobi_image_generate, noobi_audio_generate,
 noobi_model3d_generate, noobi_audio_synthesize, or noobi_asset_register. A failed generation must remain attached to
@@ -235,7 +247,7 @@ animation is not needed, document why and implement visible programmatic motion 
 `.trim();
 
 const REVIEWER_INSTRUCTIONS = `
-You are the Reviewer in Noobi.ai's game-building harness.
+You are the Reviewer in XiuPlay.ai's game-building harness.
 You are strictly read-only: inspect the actual workspace and use only non-mutating checks.
 Review correctness, playability, regressions, missing requirements, and verification evidence.
 Inspect \`.noobi/playtest.json\` and verify that it describes a coherent, bounded one-session route through launch,
@@ -368,6 +380,8 @@ export class GameHarness extends EventEmitter {
             sandbox: 'workspace-write',
             approvalPolicy: 'on-request',
             developerInstructions: IMPLEMENTER_INSTRUCTIONS,
+            // Media tools must be re-attached when resuming a durable thread.
+            ...(options.dynamicTools ? { dynamicTools: options.dynamicTools } : {}),
           })
         : await this.#runtime.startThread({
             cwd: options.cwd,
@@ -564,6 +578,7 @@ export class GameHarness extends EventEmitter {
         }
 
         const repairAttempt = repairs.length + 1;
+        const revisionBeforeRepair = await options.captureDeliveryRevision?.();
         imageGenerationRequirement = await refreshImageGenerationRequirement(
           options,
           imageGenerationRequirement,
@@ -610,7 +625,7 @@ export class GameHarness extends EventEmitter {
         hostValidatedForCurrentWorkspace = false;
         this.#emitAgentEvent(active, {
           kind: 'assistant',
-          title: `Implementer · repair ${repairAttempt}/${MAX_GAME_HARNESS_REPAIR_ATTEMPTS} completed`,
+          title: `Implementer · repair ${repairAttempt}/${MAX_GAME_HARNESS_REPAIR_ATTEMPTS} awaiting verification`,
           message: repair.text || `Repair attempt ${repairAttempt} completed.`,
           stage: 'code',
           method: 'harness/repair/attempt-completed',
@@ -632,6 +647,15 @@ export class GameHarness extends EventEmitter {
         // while the host callback never gets another chance to refresh it.
         const postRepairHostDelivery = await validateHostDelivery(active, options);
         this.#throwIfStopped(active);
+        if (postRepairHostDelivery && !postRepairHostDelivery.ok && revisionBeforeRepair !== undefined
+          && revisionBeforeRepair === await options.captureDeliveryRevision?.()) {
+          const message = 'NO_VERIFIED_CHANGE: 修复回合已结束，但源码、素材、试玩配置和正式构建均未发生内容变化，验收仍未通过。请实际执行修改和项目构建后再继续；文字承诺不能作为修复完成的证据。';
+          this.#emitAgentEvent(active, {
+            kind: 'error', title: '修复未产生可验证变更', message,
+            stage: 'verify', method: 'harness/repair/no-progress',
+          });
+          throw new Error(`${message}\n${postRepairHostDelivery.findings.join('\n')}`);
+        }
         if (postRepairHostDelivery && !postRepairHostDelivery.ok) {
           const hostReview = hostDeliveryRepairReview(postRepairHostDelivery);
           if (findingAuthority === 'host') {
@@ -647,7 +671,6 @@ export class GameHarness extends EventEmitter {
             stage: 'verify',
             method: 'harness/host-delivery/post-repair-repair',
           });
-          continue;
         }
         if (postRepairHostDelivery?.ok) {
           hostValidatedForCurrentWorkspace = true;
@@ -687,6 +710,16 @@ export class GameHarness extends EventEmitter {
         reviewer = summarizeTurn(reviewerThreadId, finalReviewTurn);
         review = parseReview(reviewer.text);
         findingAuthority = 'reviewer';
+        if (postRepairHostDelivery && !postRepairHostDelivery.ok) {
+          const hostReview = hostDeliveryRepairReview(postRepairHostDelivery);
+          if (review.verdict === 'pass') {
+            review = hostReview;
+            findingAuthority = 'host';
+          } else {
+            review = mergePendingReviewWithHostFindings(review, hostReview);
+            findingAuthority = 'mixed';
+          }
+        }
         this.#emitAgentEvent(active, {
           kind: review.verdict === 'pass' ? 'assistant' : 'error',
           title: review.verdict === 'pass'
@@ -1137,8 +1170,9 @@ function mergePendingReviewWithHostFindings(
   host: GameHarnessReview,
 ): GameHarnessReview {
   const findings = [
-    ...pending.findings.map((finding) => `REVIEWER_RECHECK: ${finding}`),
-    ...host.findings.map((finding) => `AUTHORITATIVE_HOST: ${finding}`),
+    ...pending.findings.filter((finding) => !/^(?:REVIEWER_RECHECK: )*AUTHORITATIVE_HOST: /u.test(finding))
+      .map((finding) => `REVIEWER_RECHECK: ${finding.replace(/^(?:(?:REVIEWER_RECHECK|AUTHORITATIVE_HOST): )+/u, '')}`),
+    ...host.findings.map((finding) => `AUTHORITATIVE_HOST: ${finding.replace(/^(?:(?:REVIEWER_RECHECK|AUTHORITATIVE_HOST): )+/u, '')}`),
   ].filter((finding, index, all) => all.indexOf(finding) === index);
   const summary = 'Reviewer findings still need confirmation and deterministic host delivery checks still fail.';
   return {
@@ -1165,7 +1199,7 @@ function buildPlannerPrompt(
   imageGenerationRoute: NonNullable<GameHarnessRunOptions['imageGenerationRoute']> = 'codex-imagegen',
   audioRequirement: HostAudioGenerationRequirement = { state: 'not-required' },
 ): string {
-  return `Plan this game-development request after inspecting the current workspace.\n\n${buildAgentProductionContracts(requirement, targetFrameRate, imageGenerationRoute, audioRequirement)}\n\n<user_request>\n${clipForPrompt(userPrompt)}\n</user_request>`;
+  return `Plan this game-development request after inspecting the current workspace.\n\n${buildAgentProductionContracts(requirement, targetFrameRate, imageGenerationRoute, audioRequirement)}\n\n<user_request>\n${clipForPrompt(userPrompt)}\n</user_request>\n\nPLANNER OUTPUT ONLY: You are read-only. The Implementer will execute all image generation, file edits, builds, and playtests later. Do not call a write or generation tool. Return the concise implementation plan now after inspecting the necessary files; do not begin implementation or wait for assets.`;
 }
 
 function buildImplementationPrompt(
@@ -1244,7 +1278,10 @@ function buildAgentProductionContracts(
   imageGenerationRoute: NonNullable<GameHarnessRunOptions['imageGenerationRoute']> = 'codex-imagegen',
   audioRequirement: HostAudioGenerationRequirement = { state: 'not-required' },
 ): string {
-  return `${buildRequiredImageGenerationContract(requirement, imageGenerationRoute)}\n\n${buildVisualAssetCoverageContract()}\n\n${buildModel3dGenerationContract()}\n\n${buildAnimationNeedsContract()}\n\n${buildExperiencePlaytestContract()}\n\n${buildTargetFrameRateContract(targetFrameRate)}\n\n${buildAudioGenerationContract(audioRequirement)}`;
+  return `${buildRequiredImageGenerationContract(requirement, imageGenerationRoute)}\n\n${buildVisualAssetCoverageContract()}\n\n${buildModel3dGenerationContract()}\n\n${buildAnimationNeedsContract()}\n\n${buildExperiencePlaytestContract()}\n\n${buildTargetFrameRateContract(targetFrameRate)}\n\n${buildAudioGenerationContract(audioRequirement)}\n\n<production_build_contract>
+The Implementer must actually run the project's production build through its sandboxed command tool after changing production inputs. For Web projects, inspect package.json, install declared dependencies locally when necessary and permitted, execute the declared build script, and verify dist/index.html and its resources exist. Do not merely promise to build, copy uncompiled sources into dist, or report a development preview as a successful production build. Vite serves files under public at /assets/...; do not use /public/assets/... in production URLs.
+Before ending a writer turn, execute the required changes and verification tools and summarize their actual results. If an operation cannot run, state the concrete blocker. A response ending with 'let me check' or 'I will build' is not a completed implementation or repair. Do not embed live scoreboards, gameplay balls, or player controls in decorative AI background images; render those states from game logic.
+</production_build_contract>`;
 }
 
 export function buildExperiencePlaytestContract(): string {
@@ -1289,6 +1326,11 @@ paths, secrets, selectors that escape the game document, or instructions to acce
 Each common action must map to real production input; a move-only game may make primary a contextual interact input,
 but it may not omit the primary-action check. Pause must visibly freeze gameplay and resume it; restart must restore a
 fresh playable state without reloading the desktop app. Keep the journey bounded and deterministic enough to replay.
+Terminal checks must assert the real winner/result and final score using visible result text or a state-bound DOM
+selector; canvas-not-blank and screen-change alone never prove victory or defeat. For a competitive game, verify
+each side's winning path and the opposing losing path, then verify that restart clears scores and the result.
+For local multiplayer, separately check that one player's keys do not move the other player's entity. Use real
+production input, never a QA shortcut that directly sets a score, winner, or completed state.
 
 Only the Noobi host owns \`artifacts/playtest/\`. The Implementer MUST NOT create, edit, copy, or fabricate
 \`artifacts/playtest/latest/report.json\` or screenshots. A host report, when present, must use the same playtest
@@ -1314,6 +1356,7 @@ export function buildVisualAssetCoverageContract(): string {
 The generated-image gate proves that at least one trusted image exists; it does NOT prove that the game's core visual subjects are covered. The Planner MUST add a core visual asset table that lists every player-visible interactive subject family, its stable subject/card/entity IDs, required states, chosen asset path or atlas regions, and exact runtime binding code. Backgrounds, splash art, logos, and decorative frames are separate roles and never cover missing gameplay entities.
 Default to producing real visual assets through the host image route when suitable, coherent assets are not already present. Do not ask the user to choose a generation strategy. Reuse is allowed only after inspecting usable existing art and its production binding. Every generated/imported asset must be registered in public/assets/asset-pack.json with classification metadata such as role and subjectId; an atlas must use role=card-art-atlas plus columns, rows, and a comma-separated subjects list. Classification metadata is not origin proof and cannot replace the private generated-image attestation.
 For card, deck-building, board, and tactics games, each distinct playable card/piece family needs addressable art. Separate card-face assets must use unique subjectId values. A shared atlas is acceptable only when it contains at least four genuinely distinct, predictable regions, identifies every covered cardId/subject, and production code selects the correct region for each card. A table background, one repeated picture, the complete uncropped sheet, plain text on default Buttons, or color-only rectangles are not card-art coverage.
+The host counts separate card faces by verified file content, not names or declared hashes. Duplicating a file for multiple subjectIds does not add coverage. An atlas cannot declare more subjects than it has cells. Inspect production screenshots for baked scores, controls, balls, or paddles in decorative backgrounds; use only an inspected UI-safe region or obtain suitable decorative art while keeping live game state code-driven.
 For character/action games, cover the player, representative enemies, interactable objects, pickups/projectiles, and gameplay feedback required by the vertical slice. Programmatic geometry can support an intentionally abstract visual language, but it cannot silently replace requested depicted characters or props. UI labels may be code-native; the depicted gameplay subject underneath must still be visually represented.
 The Implementer MUST wire core assets into the running game and report the actual subjectId-to-path/atlas-region mapping. The Reviewer MUST inspect the manifest, source/scene bindings, and running presentation. Return repair for missing subject families, duplicate regions masquerading as variety, manifest-only assets, an atlas rendered without region selection, fallback primitives replacing requested art, or core entities still displayed as plain text/default controls. The host may apply an additional deterministic genre gate after review; failing it blocks completion even if one background passed the general image gate.
 </visual_asset_coverage_contract>`;
@@ -1568,7 +1611,7 @@ function clipForPrompt(value: string): string {
 
 function clip(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
-  return `${value.slice(0, maxChars)}\n…[truncated by Noobi.ai harness]`;
+  return `${value.slice(0, maxChars)}\n…[truncated by XiuPlay.ai harness]`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

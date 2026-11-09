@@ -1,5 +1,5 @@
 import type { GameAssetRecord, GameEngine } from '../shared/contracts.js';
-import { findProductionAssetReference } from './imageGenerationAttestation.js';
+import { findProductionAssetReference, projectAssetMatches } from './imageGenerationAttestation.js';
 
 const CARD_GAME = /(?:卡牌|卡片|卡组|牌组|集换式|deck[ -]?builder|card[ -]?game|\btcg\b|\bccg\b)/iu;
 const MINIMUM_CARD_SUBJECTS = 4;
@@ -13,7 +13,7 @@ export type VisualAssetCoverageResult =
   | {
       ok: false;
       profile: 'card-game';
-      reason: 'missing-core-card-art' | 'insufficient-card-coverage' | 'missing-production-reference';
+      reason: 'missing-core-card-art' | 'insufficient-card-coverage' | 'missing-production-reference' | 'duplicate-card-art' | 'invalid-card-content';
       detail: string;
     };
 
@@ -37,12 +37,18 @@ export async function verifyVisualAssetCoverage(input: {
   const atlases = images.filter((asset) => metadataText(asset, 'role') === 'card-art-atlas');
   let atlasWithoutReference = false;
   let atlasWithoutCoverage = false;
+  let invalidContent = false;
   for (const atlas of atlases) {
     const columns = metadataInteger(atlas, 'columns');
     const rows = metadataInteger(atlas, 'rows');
     const subjects = metadataSubjects(atlas);
-    if (columns * rows < MINIMUM_CARD_SUBJECTS || subjects.size < MINIMUM_CARD_SUBJECTS) {
+    if (!Number.isSafeInteger(columns * rows) || columns * rows < MINIMUM_CARD_SUBJECTS
+      || subjects.size < MINIMUM_CARD_SUBJECTS || subjects.size > columns * rows) {
       atlasWithoutCoverage = true;
+      continue;
+    }
+    if (!await projectAssetMatches(input.root, atlas.relativePath, atlas.sha256, atlas.size)) {
+      invalidContent = true;
       continue;
     }
     const referencedBy = await findProductionAssetReference(input.root, atlas.relativePath);
@@ -58,19 +64,38 @@ export async function verifyVisualAssetCoverage(input: {
     return role === 'card-art' || role === 'card-face';
   });
   const referencedFaces = new Map<string, string>();
+  const faceHashes = new Set<string>();
+  let duplicateContent = false;
   for (const face of individualFaces) {
     const subjectId = metadataText(face, 'subjectId');
     if (!subjectId || referencedFaces.has(subjectId)) continue;
     if (await findProductionAssetReference(input.root, face.relativePath)) {
+      if (!await projectAssetMatches(input.root, face.relativePath, face.sha256, face.size)) {
+        invalidContent = true;
+        continue;
+      }
+      if (faceHashes.has(face.sha256)) {
+        duplicateContent = true;
+        continue;
+      }
+      faceHashes.add(face.sha256);
       referencedFaces.set(subjectId, face.relativePath);
     }
   }
+
   if (referencedFaces.size >= MINIMUM_CARD_SUBJECTS) {
     return {
       ok: true,
       profile: 'card-game',
       referencedPaths: [...referencedFaces.values()],
     };
+  }
+
+  if (invalidContent || duplicateContent) {
+    return { ok: false, profile: 'card-game',
+      reason: invalidContent ? 'invalid-card-content' : 'duplicate-card-art',
+      detail: invalidContent ? '卡牌素材文件缺失、被修改或不符合登记的内容指纹，请重新登记实际使用的素材。'
+        : '多个 cardId 使用了完全相同的图片内容；复制文件或修改素材名称不能增加卡面覆盖数量。' };
   }
 
   if (atlasWithoutReference || individualFaces.length >= MINIMUM_CARD_SUBJECTS) {
