@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Innate-Labs/Noobi.ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Innate-Labs/Noobi.ai/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://github.com/Innate-Labs/Noobi.ai/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Innate-Labs/Noobi.ai?style=flat"></a>
-  <a href="https://github.com/Innate-Labs/Noobi.ai/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/Innate-Labs/Noobi.ai?style=flat"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tonghuyen3234y-del/Noobi.ai/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/tonghuyen3234y-del/Noobi.ai?style=flat"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/tonghuyen3234y-del/Noobi.ai?style=flat"></a>
   <img alt="平台：macOS" src="https://img.shields.io/badge/platform-macOS-11120f">
   <img alt="开发者预览版" src="https://img.shields.io/badge/status-developer%20preview-E9A93A">
 </p>
@@ -28,7 +28,17 @@
 
 Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是把 Codex 放进一条有边界的游戏制作循环：只读 Planner 拆解任务，Implementer 在独立工程目录中实现，独立 Reviewer 检查真实结果，宿主再正式构建并自动试玩。审查、构建或体验评测未通过时，会交回同一个 Implementer，最多连续修复三轮。
 
-> **当前状态：** macOS 开发者预览版。项目暂未发布已签名、公证的安装包，请从源码运行。生成结果是你自己工作区里的独立 Web 或 Godot 4 游戏工程。
+> **当前状态：** 本分支的桌面应用名为 **XiuPlay.ai**，提供 [macOS Apple 芯片预览安装包](https://github.com/tonghuyen3234y-del/Noobi.ai/releases/tag/v0.1.0-preview.20261109)，也可从源码运行。安装包尚未签名、公证；生成结果是独立的本地 Web 或 Godot 4 游戏工程。
+
+## 2026-11-09 预览版更新
+
+- 首页使用浅紫像素云海背景，加入鼠标像素粒子、数字碎片、紫色光点拖尾和星星交互；移动端保留静态背景。
+- 支持 ChatGPT 登录与百炼 Key 两条模型路线，补齐 Qwen 补丁工具注册、工具结果回传和协议转换。
+- 修正规划阶段职责，限制百炼超时后的自动重试，增加无实际改动修复检测，并刷新修复后的审查证据。
+- 适配万相 2.1 生图源尺寸，保留可读的生图失败原因，并补充取消请求入口。
+- 生产构建、425 项自动化测试和 GitHub CI 已通过；打包后的 macOS 应用已验证可启动并加载现有配置。**一句话生成新游戏的全流程稳定性仍待复测，以上验证不代表该流程已验收通过。**
+
+本分支基于 [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.ai) 进行迭代。
 
 ## 为什么选择 Noobi.ai
 
@@ -47,18 +57,18 @@ Noobi.ai 不让单个 Agent 在一次回合里即兴完成所有工作，而是�
 
 - macOS（当前已测试、已配置打包的目标平台）
 - Node.js 22 LTS 与 npm
-- 可用的 ChatGPT/Codex 账户
+- 可用的 ChatGPT/Codex 账户，或已开通对应服务的阿里云百炼 Key
 - 可用的图片生成路线：已配置图片 Provider 或 Codex ImageGen
 - 只有 Agent 判断需要 Godot 时，才要求 Godot 4 与版本精确匹配的 Web Export Templates
 
 ```bash
-git clone https://github.com/Innate-Labs/Noobi.ai.git
+git clone https://github.com/tonghuyen3234y-del/Noobi.ai.git
 cd Noobi.ai
 npm ci
 npm run dev
 ```
 
-首次启动后，打开**设置 → Codex 账户**完成登录。Noobi.ai 使用应用私有的 `userData/codex-home`，不会覆盖全局 `~/.codex` 配置。
+首次启动后，在设置中选择 ChatGPT 登录或 Qwen（百炼）路线，并完成对应登录或 Key 配置。文本模型与图片生成服务需分别配置。应用为两条路线使用独立的私有 Codex 目录，不会覆盖全局 `~/.codex` 配置。
 
 如果应用无法自动找到 Codex，可显式指定二进制：
 

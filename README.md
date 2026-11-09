@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Innate-Labs/Noobi.ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Innate-Labs/Noobi.ai/actions/workflows/ci.yml/badge.svg?branch=main"></a>
-  <a href="https://github.com/Innate-Labs/Noobi.ai/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Innate-Labs/Noobi.ai?style=flat"></a>
-  <a href="https://github.com/Innate-Labs/Noobi.ai/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/Innate-Labs/Noobi.ai?style=flat"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/tonghuyen3234y-del/Noobi.ai/actions/workflows/ci.yml/badge.svg?branch=main"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/tonghuyen3234y-del/Noobi.ai?style=flat"></a>
+  <a href="https://github.com/tonghuyen3234y-del/Noobi.ai/forks"><img alt="GitHub forks" src="https://img.shields.io/github/forks/tonghuyen3234y-del/Noobi.ai?style=flat"></a>
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-11120f">
   <img alt="Developer preview" src="https://img.shields.io/badge/status-developer%20preview-E9A93A">
 </p>
@@ -28,7 +28,17 @@
 
 Noobi.ai gives Codex a bounded game-production loop instead of asking one agent to improvise everything in a single pass. A read-only Planner scopes the work, an Implementer builds inside an isolated project directory, an independent Reviewer checks the result, and the host builds and plays the production output before completion. Failed review, build or playtest checks return to the same Implementer for up to three repair rounds.
 
-> **Current status:** developer preview for macOS. No signed or notarized binary is published yet; run it from source. The output is a standalone Web or Godot 4 project in your own workspace.
+> **Current status:** this fork ships the desktop app as **XiuPlay.ai**. Download the [macOS Apple silicon preview](https://github.com/tonghuyen3234y-del/Noobi.ai/releases/tag/v0.1.0-preview.20261109) or run from source. The preview is unsigned and not notarized. Generated games remain standalone local Web or Godot 4 projects.
+
+## Preview update — 2026-11-09
+
+- Lavender pixel-cloud home background with pointer particles, digital fragments, soft purple trails and star interactions; mobile retains the static background.
+- ChatGPT login and Bailian Key routes, with Qwen patch-tool registration, tool-result round trips and protocol conversion.
+- Planner role boundaries, bounded provider retries, repair progress checks and refreshed post-repair review evidence.
+- Wan 2.1 source-image size adaptation, readable image-generation failures and a request cancellation control.
+- Production builds, 425 automated tests and GitHub CI passed; the packaged macOS app was verified to launch with existing settings. **Fresh one-prompt game generation still needs end-to-end revalidation; these checks do not certify that flow.**
+
+This fork builds on [Innate-Labs/Noobi.ai](https://github.com/Innate-Labs/Noobi.ai).
 
 ## Why Noobi.ai
 
@@ -47,18 +57,18 @@ Noobi.ai gives Codex a bounded game-production loop instead of asking one agent 
 
 - macOS (the current tested and packaged target)
 - Node.js 22 LTS and npm
-- a ChatGPT/Codex account
+- a ChatGPT/Codex account, or an Alibaba Bailian Key with the required services enabled
 - an available image route: a configured image provider or Codex ImageGen
 - Godot 4 with exactly matching Web export templates, only when the Agent selects Godot
 
 ```bash
-git clone https://github.com/Innate-Labs/Noobi.ai.git
+git clone https://github.com/tonghuyen3234y-del/Noobi.ai.git
 cd Noobi.ai
 npm ci
 npm run dev
 ```
 
-On first launch, open **Settings → Codex account** and sign in. Noobi.ai uses an app-private `userData/codex-home`; it does not overwrite your global `~/.codex` configuration.
+On first launch, choose ChatGPT login or Qwen (Bailian) in Settings and configure that route. Text models and image generation are configured separately. Each route uses its own app-private Codex directory; your global `~/.codex` configuration is not overwritten.
 
 If Codex cannot be located automatically, point Noobi.ai at a binary explicitly:
 
